@@ -1,6 +1,8 @@
 .venv/
 build/
 dist/
+installer/
+_nsis/
 __pycache__/
 *.pyc
 ocr_modules/
