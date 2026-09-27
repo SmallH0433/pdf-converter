@@ -1,0 +1,74 @@
+# -*- mode: python ; coding: utf-8 -*-
+# 文件夹版（onedir）打包：OCR 组件（rapidocr/onnxruntime-gpu/cv2/numpy 等）随包发布、开箱即用；
+# GPU 加速所需的 nvidia CUDA 运行库不打包，由用户在「PDF OCR」页一键安装到 exe 同级
+# ocr_modules/（因此捆绑 pip 供运行时安装）。onnxruntime-gpu 缺 CUDA 库时自动退回 CPU。
+from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import copy_metadata
+
+datas = []
+binaries = []
+hiddenimports = []
+hiddenimports += collect_submodules('pymupdf')
+tmp_ret = collect_all('qfluentwidgets')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# OCR 组件（含模型文件、onnxruntime 的 CUDA provider DLL）
+tmp_ret = collect_all('rapidocr_onnxruntime')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('onnxruntime')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('cv2')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('shapely')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# 运行时一键安装 GPU 加速包需要 pip（含版本元数据、cacert.pem、distlib 启动器）与证书
+hiddenimports += collect_submodules('pip')
+datas += copy_metadata('pip')
+datas += collect_data_files('pip')
+tmp_ret = collect_all('certifi')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
+excludes = []
+
+a = Analysis(
+    ['run.py'],
+    pathex=[],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=excludes,
+    noarchive=False,
+    optimize=0,
+)
+pyz = PYZ(a.pure)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name='PDF转换工具',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+)
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name='PDF转换工具',
+)

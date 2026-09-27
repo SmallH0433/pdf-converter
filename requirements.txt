@@ -1,0 +1,9 @@
+PySide6>=6.7
+PyMuPDF>=1.24
+PySide6-Fluent-Widgets>=1.7
+rapidocr_onnxruntime>=1.4
+onnxruntime-gpu==1.22.0  # 缺 CUDA 运行库时自动退回 CPU 推理
+# GPU 加速（可选，应用内「PDF OCR」页一键安装，按显卡自动选择）：
+# NVIDIA → nvidia-cuda-runtime-cu12 nvidia-cudnn-cu12 nvidia-cublas-cu12 nvidia-cufft-cu12
+# AMD/Intel/高通（Win10+）→ --no-deps onnxruntime-directml==1.22.0
+# 苹果 Mac（源码运行）→ 官方 onnxruntime 自带 CoreML，无需安装
