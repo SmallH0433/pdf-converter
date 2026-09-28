@@ -116,7 +116,11 @@ def status_text() -> str:
 
 
 def enable_kinetic_scroll(scroll_area) -> None:
-    """给滚动区挂接手势滚动（触屏/移动端惯性滚动，桌面端不影响鼠标滚轮）。"""
+    """给滚动区挂接触摸手势滚动（惯性滚动）。
+
+    用 TouchGesture 而非 LeftMouseButtonGesture：后者会把鼠标左键拖拽也当作
+    页面滚动，与按住左键手写标注冲突；触摸手势只响应触摸输入，鼠标完全留给标注。
+    """
     if not backend()["finger_scrolls"]:
         return
     try:
@@ -125,6 +129,6 @@ def enable_kinetic_scroll(scroll_area) -> None:
             return  # 离屏（测试）平台无手势识别器，挂接会在退出时崩溃
         from PySide6.QtWidgets import QScroller
         QScroller.grabGesture(scroll_area.viewport(),
-                              QScroller.ScrollerGestureType.LeftMouseButtonGesture)
+                              QScroller.ScrollerGestureType.TouchGesture)
     except Exception:  # noqa: BLE001
         pass
