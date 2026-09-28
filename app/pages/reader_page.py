@@ -612,7 +612,8 @@ class ReaderPage(QWidget):
         self._fit_width = True
         self.fit_btn.setChecked(True)
         from PySide6.QtCore import QTimer
-        QTimer.singleShot(0, self._fit_to_width)
+        # 等布局完成后再走完整的翻页流程（set_document + 适合宽度渲染）
+        QTimer.singleShot(0, lambda: self._goto_page(0))
         self._update_ui_state()
 
     def _stop_workers(self):
