@@ -154,7 +154,7 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(pageView)
 
-        statusText = label("打开或选择 PDF 开始阅读（手指导航、手写笔书写）")
+        statusText = label("打开或选择 PDF 开始阅读（单指书写/橡皮，双指拖动缩放）")
         statusText.setPadding(16, 4, 16, 8)
         root.addView(statusText)
 

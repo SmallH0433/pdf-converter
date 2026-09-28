@@ -48,9 +48,13 @@ class PageView(context: Context) : View(context) {
 
     private val currentStrokePoints = mutableListOf<Triple<Float, Float, Float>>()
     private var currentStroke: Stroke? = null
-    private var strokingPointer = -1
-    private var erasingPointer = -1
-    private var panPointer = -1
+    private var drawPointer = -1        // 正在书写/擦除的指针（手写笔或手指）
+    private var drawingWithFinger = false
+    private var erasingActive = false
+    private var stylusDown = false      // 手写笔在屏（手掌排斥：忽略手指）
+    private var panPointer = -1         // 单指平移（选择/留言模式）
+    private var twoFingerPan = false    // 双指平移/缩放中
+    private var tapMoved = false
     private var lastPanX = 0f
     private var lastPanY = 0f
     private var downX = 0f
@@ -234,41 +238,101 @@ class PageView(context: Context) : View(context) {
                 downX = event.x
                 downY = event.y
                 downTime = event.eventTime
+                tapMoved = false
+                val id = event.getPointerId(0)
                 when (event.getToolType(0)) {
-                    MotionEvent.TOOL_TYPE_STYLUS -> when {
-                        tool == Tool.ERASER -> {
-                            erasingPointer = event.getPointerId(0)
-                            eraseAt(event.x, event.y)
+                    MotionEvent.TOOL_TYPE_STYLUS -> {
+                        stylusDown = true
+                        when (tool) {
+                            Tool.PEN -> {
+                                drawPointer = id
+                                drawingWithFinger = false
+                                erasingActive = false
+                                beginStrokeAt(event.x, event.y, event.pressure)
+                            }
+                            Tool.ERASER -> {
+                                drawPointer = id
+                                erasingActive = true
+                                eraseAt(event.x, event.y)
+                            }
+                            else -> handleTap(event.x, event.y)
                         }
-                        tool == Tool.PEN -> beginStroke(event, 0)
-                        else -> handleTap(event.x, event.y)
                     }
                     MotionEvent.TOOL_TYPE_ERASER -> {
-                        erasingPointer = event.getPointerId(0)
+                        stylusDown = true
+                        drawPointer = id
+                        erasingActive = true
                         eraseAt(event.x, event.y)
                     }
-                    else -> { // 手指：平移/缩放导航
-                        panPointer = event.getPointerId(0)
-                        lastPanX = event.x
-                        lastPanY = event.y
+                    else -> { // 手指
+                        when (tool) {
+                            // 画笔/橡皮：单指书写/擦除（双指才拖动页面）
+                            Tool.PEN -> {
+                                drawPointer = id
+                                drawingWithFinger = true
+                                erasingActive = false
+                                beginStrokeAt(event.x, event.y, 0.6f)
+                            }
+                            Tool.ERASER -> {
+                                drawPointer = id
+                                erasingActive = true
+                                eraseAt(event.x, event.y)
+                            }
+                            // 选择/留言：单指拖动页面，轻点交互
+                            else -> {
+                                panPointer = id
+                                lastPanX = event.x
+                                lastPanY = event.y
+                            }
+                        }
                     }
                 }
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
-                // 第二指落下：结束当前笔画，进入捏合缩放
-                finishStroke()
-                strokingPointer = -1
-                erasingPointer = -1
-                panPointer = event.getPointerId(0)
-                lastPanX = event.x
-                lastPanY = event.y
+                // 第二指落下：手指起的笔画取消（视为想拖动），手写笔笔画落定保留
+                if (drawPointer >= 0) {
+                    if (!erasingActive) {
+                        if (drawingWithFinger) {
+                            currentStroke = null
+                            currentStrokePoints.clear()
+                            invalidate()
+                        } else {
+                            finishStroke()
+                        }
+                    }
+                    drawPointer = -1
+                    erasingActive = false
+                }
+                panPointer = -1
+                tapMoved = true
+                if (!stylusDown && event.pointerCount >= 2) { // 手写笔在屏时忽略手指（手掌排斥）
+                    twoFingerPan = true
+                    lastPanX = (event.getX(0) + event.getX(1)) / 2
+                    lastPanY = (event.getY(0) + event.getY(1)) / 2
+                }
             }
             MotionEvent.ACTION_MOVE -> {
+                if (twoFingerPan && event.pointerCount >= 2) {
+                    val mx = (event.getX(0) + event.getX(1)) / 2
+                    val my = (event.getY(0) + event.getY(1)) / 2
+                    offsetX += mx - lastPanX
+                    offsetY += my - lastPanY
+                    lastPanX = mx
+                    lastPanY = my
+                    clampOffsets()
+                    invalidate()
+                    return true
+                }
                 for (i in 0 until event.pointerCount) {
                     val id = event.getPointerId(i)
                     when (id) {
-                        strokingPointer -> extendStroke(event, i)
-                        erasingPointer -> eraseAt(event.getX(i), event.getY(i))
+                        drawPointer -> {
+                            if (erasingActive) {
+                                eraseAt(event.getX(i), event.getY(i))
+                            } else {
+                                extendStroke(event, i)
+                            }
+                        }
                         panPointer -> {
                             val dx = event.getX(i) - lastPanX
                             val dy = event.getY(i) - lastPanY
@@ -276,26 +340,44 @@ class PageView(context: Context) : View(context) {
                             offsetY += dy
                             lastPanX = event.getX(i)
                             lastPanY = event.getY(i)
+                            if (kotlin.math.abs(dx) + kotlin.math.abs(dy) > 4f) tapMoved = true
                             clampOffsets()
                             invalidate()
                         }
                     }
                 }
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                if (strokingPointer >= 0) {
-                    finishStroke()
-                    strokingPointer = -1
+            MotionEvent.ACTION_POINTER_UP -> {
+                if (twoFingerPan && event.pointerCount - 1 < 2) {
+                    twoFingerPan = false
+                    // 剩余一指：选择/留言模式恢复单指平移
+                    if (event.pointerCount - 1 == 1 &&
+                        (tool == Tool.SELECT || tool == Tool.NOTE)) {
+                        val idx = if (event.actionIndex == 0) 1 else 0
+                        panPointer = event.getPointerId(idx)
+                        lastPanX = event.getX(idx)
+                        lastPanY = event.getY(idx)
+                    }
                 }
-                erasingPointer = -1
-                // 手指轻点：留言放置 / 便签编辑
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                val id = event.getPointerId(event.actionIndex)
+                if (id == drawPointer) {
+                    if (!erasingActive) finishStroke()
+                    drawPointer = -1
+                    erasingActive = false
+                }
+                // 轻点（选择/留言模式、未拖动）：便签编辑 / 留言放置
                 val dt = event.eventTime - downTime
                 val dist = kotlin.math.hypot(event.x - downX, event.y - downY)
-                if (dt < 300 && dist < 24f &&
+                if (dt < 300 && dist < 24f && !tapMoved && !twoFingerPan &&
+                    (tool == Tool.SELECT || tool == Tool.NOTE) &&
                     event.getToolType(event.actionIndex) != MotionEvent.TOOL_TYPE_STYLUS) {
                     handleTap(event.x, event.y)
                 }
                 panPointer = -1
+                twoFingerPan = false
+                stylusDown = false
             }
         }
         return true
@@ -313,11 +395,10 @@ class PageView(context: Context) : View(context) {
         }
     }
 
-    private fun beginStroke(event: MotionEvent, idx: Int) {
+    private fun beginStrokeAt(x: Float, y: Float, pressure: Float) {
         currentStrokePoints.clear()
         currentStroke = Stroke(color = penColor, widthPt = penWidthPt)
-        strokingPointer = event.getPointerId(idx)
-        addStrokePoint(event.getX(idx), event.getY(idx), event.getPressure(idx))
+        addStrokePoint(x, y, pressure.coerceIn(0.05f, 1f))
     }
 
     private fun extendStroke(event: MotionEvent, idx: Int) {
