@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 
 from qfluentwidgets import (
     BodyLabel,
@@ -12,7 +12,10 @@ from qfluentwidgets import (
     FlowLayout,
     FluentIcon as FIF,
     IconWidget,
+    InfoBar,
+    InfoBarPosition,
     PrimaryPushButton,
+    PushButton,
     StrongBodyLabel,
 )
 
@@ -80,15 +83,52 @@ class HomePage(QWidget):
         card5 = FeatureCard(
             FIF.SEARCH, "PDF OCR",
             "为扫描版 PDF 添加隐形文字层，支持 GPU 加速，识别后可搜索、复制、生成书签。", card_area)
+        card6 = FeatureCard(
+            FIF.PENCIL_INK, "阅读器",
+            "预览 PDF，手写笔压感标注、留言便签，全文查找（扫描页可选 OCR）。", card_area)
         card1.clicked.connect(lambda: self.navigate.emit("convertPage"))
         card2.clicked.connect(lambda: self.navigate.emit("extractPage"))
         card3.clicked.connect(lambda: self.navigate.emit("bookmarkPage"))
         card4.clicked.connect(lambda: self.navigate.emit("img2pdfPage"))
         card5.clicked.connect(lambda: self.navigate.emit("ocrPage"))
-        for card in (card1, card2, card3, card4, card5):
+        card6.clicked.connect(lambda: self.navigate.emit("readerPage"))
+        for card in (card1, card2, card3, card4, card5, card6):
             flow.addWidget(card)
         layout.addWidget(card_area)
 
         tip = CaptionLabel("提示：在功能页面中均可直接拖入 PDF 文件。", self)
         layout.addWidget(tip)
+
+        # 注册到 .pdf「打开方式」（Windows，HKCU 无需管理员）
+        from ..core import fileassoc
+        if fileassoc.supported():
+            row = QHBoxLayout()
+            self.assoc_btn = PushButton("", self)
+            self.assoc_btn.clicked.connect(self._toggle_fileassoc)
+            row.addWidget(self.assoc_btn)
+            row.addStretch(1)
+            layout.addLayout(row)
+            self._refresh_assoc_btn()
         layout.addStretch(1)
+
+    def _refresh_assoc_btn(self):
+        from ..core import fileassoc
+        self.assoc_btn.setText("从 PDF「打开方式」中移除" if fileassoc.is_registered()
+                               else "将本程序加入 PDF「打开方式」")
+
+    def _toggle_fileassoc(self):
+        from ..core import fileassoc
+        try:
+            if fileassoc.is_registered():
+                fileassoc.unregister()
+                InfoBar.success("已移除", "已从 .pdf 的「打开方式」中移除", parent=self,
+                                position=InfoBarPosition.TOP)
+            else:
+                fileassoc.register()
+                InfoBar.success("已注册",
+                                "右键 PDF 文件 → 打开方式，即可选择本程序",
+                                parent=self, position=InfoBarPosition.TOP)
+        except Exception as e:  # noqa: BLE001
+            InfoBar.error("操作失败", str(e), parent=self,
+                          position=InfoBarPosition.TOP)
+        self._refresh_assoc_btn()

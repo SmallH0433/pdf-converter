@@ -1,4 +1,4 @@
-PySide6>=6.7
+PySide6>=6.7,<6.13  # Qt 6.12 是最后一个支持 Windows 10 的版本，6.13+ 仅限 Win11
 PyMuPDF>=1.24
 PySide6-Fluent-Widgets>=1.7
 rapidocr_onnxruntime>=1.4

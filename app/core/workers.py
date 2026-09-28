@@ -99,9 +99,9 @@ class OcrPdfWorker(QThread):
     cancelled = Signal()
     failed = Signal(str)
 
-    def __init__(self, pdf_path, out_path, parent=None):
+    def __init__(self, pdf_path, out_path, include_annots=False, parent=None):
         super().__init__(parent)
-        self._args = (pdf_path, out_path)
+        self._args = (pdf_path, out_path, include_annots)
         self._cancelled = False
 
     def cancel(self):
@@ -109,7 +109,7 @@ class OcrPdfWorker(QThread):
 
     def run(self):
         from . import ocr_service
-        pdf_path, out_path = self._args
+        pdf_path, out_path, include_annots = self._args
 
         def on_progress(done, total):
             self.progress.emit(done, total)
@@ -117,7 +117,7 @@ class OcrPdfWorker(QThread):
 
         try:
             result = ocr_service.ocr_pdf(
-                pdf_path, out_path,
+                pdf_path, out_path, include_annots=include_annots,
                 progress_cb=on_progress,
                 cancel_check=lambda: self._cancelled,
             )
@@ -145,6 +145,40 @@ class OcrInstallWorker(QThread):
         try:
             msg = ocr_service.install_gpu(self._kind, log_cb=self.log.emit)
             self.finished_ok.emit(msg)
+        except Exception as e:  # noqa: BLE001
+            self.failed.emit(str(e))
+
+
+class SearchWorker(QThread):
+    """全文查找（可选 OCR 扫描页）。"""
+
+    progress = Signal(int, int)          # 已扫描页, 总页数
+    finished_ok = Signal(list)           # [{'page','rects','snippet'}, ...]
+    failed = Signal(str)
+
+    def __init__(self, pdf_path, needle, use_ocr=False, parent=None):
+        super().__init__(parent)
+        self._args = (pdf_path, needle, use_ocr)
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        from . import annot_service
+        pdf_path, needle, use_ocr = self._args
+
+        def on_progress(done, total):
+            self.progress.emit(done, total)
+            self.msleep(1)
+
+        try:
+            hits = annot_service.search_text(
+                pdf_path, needle, use_ocr=use_ocr,
+                progress_cb=on_progress,
+                cancel_check=lambda: self._cancelled,
+            )
+            self.finished_ok.emit(hits)
         except Exception as e:  # noqa: BLE001
             self.failed.emit(str(e))
 

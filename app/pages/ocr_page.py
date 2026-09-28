@@ -9,6 +9,7 @@ from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
     CardWidget,
+    CheckBox,
     InfoBar,
     InfoBarPosition,
     PrimaryPushButton,
@@ -58,6 +59,11 @@ class OcrPage(QWidget):
         self.accel_btn_row.addStretch(1)
         engine_col.addLayout(self.accel_btn_row)
         root.addWidget(self.engine_card)
+
+        # 是否识别批注/留言（默认不识别，与「书签生成」的 OCR 行为一致）
+        self.annots_check = CheckBox(
+            "识别页面上的批注与留言（手写批注墨迹一并识别，留言文字写入文字层）", self)
+        root.addWidget(self.annots_check)
 
         # 操作行
         action_row = QHBoxLayout()
@@ -173,7 +179,9 @@ class OcrPage(QWidget):
         self.cancel_btn.setEnabled(True)
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)  # 总页数未知，先转圈，首帧进度后改为确定值
-        self._worker = OcrPdfWorker(self._pdf_path, out_path, self)
+        self._worker = OcrPdfWorker(self._pdf_path, out_path,
+                                    include_annots=self.annots_check.isChecked(),
+                                    parent=self)
         self._worker.progress.connect(self._on_progress)
         self._worker.finished_ok.connect(self._on_done)
         self._worker.cancelled.connect(self._on_cancelled)

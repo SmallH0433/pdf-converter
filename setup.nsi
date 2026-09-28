@@ -1,4 +1,4 @@
-﻿; PDF转换工具 安装程序脚本（NSIS 3）
+; PDF转换工具 安装程序脚本（NSIS 3）
 ; 编译：_nsis\nsis-bundle\windows\makensis.exe setup.nsi
 
 !include "MUI2.nsh"
@@ -36,12 +36,19 @@ Section "Install"
 
     ; 注册到 Windows「应用和功能」
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PDF转换工具" "DisplayName" "PDF转换工具"
-    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PDF转换工具" "DisplayVersion" "1.0.0"
+    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PDF转换工具" "DisplayVersion" "1.1.0"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PDF转换工具" "Publisher" "SmallH0433"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PDF转换工具" "DisplayIcon" "$INSTDIR\PDF转换工具.exe"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PDF转换工具" "UninstallString" "$INSTDIR\卸载 PDF转换工具.exe"
     WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PDF转换工具" "NoModify" 1
     WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PDF转换工具" "NoRepair" 1
+
+    ; 注册到 .pdf「打开方式」（ProgId + OpenWithProgids，不抢占默认关联）
+    WriteRegStr HKCU "Software\Classes\PDFConverterTool.pdf" "" "PDF 文档 (PDF转换工具)"
+    WriteRegStr HKCU "Software\Classes\PDFConverterTool.pdf\DefaultIcon" "" '"$INSTDIR\PDF转换工具.exe",0'
+    WriteRegStr HKCU "Software\Classes\PDFConverterTool.pdf\shell\open" "" "用 PDF转换工具 打开"
+    WriteRegStr HKCU "Software\Classes\PDFConverterTool.pdf\shell\open\command" "" '"$INSTDIR\PDF转换工具.exe" "%1"'
+    WriteRegStr HKCU "Software\Classes\.pdf\OpenWithProgids" "PDFConverterTool.pdf" ""
 SectionEnd
 
 Section "Uninstall"
@@ -51,4 +58,6 @@ Section "Uninstall"
     RMDir "$SMPROGRAMS\PDF转换工具"
     Delete "$DESKTOP\PDF转换工具.lnk"
     DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PDF转换工具"
+    DeleteRegKey HKCU "Software\Classes\PDFConverterTool.pdf"
+    DeleteRegValue HKCU "Software\Classes\.pdf\OpenWithProgids" "PDFConverterTool.pdf"
 SectionEnd

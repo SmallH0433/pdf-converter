@@ -474,30 +474,37 @@ def get_engine():
     return _engine
 
 
-def page_image_array(doc: fitz.Document, page: fitz.Page):
+def page_image_array(doc: fitz.Document, page: fitz.Page, include_annots: bool = False):
     """取页面图像：优先直接用整页内嵌扫描图（无损且快），否则按 200 DPI 渲染。
+
+    include_annots=False 时渲染不含批注/留言（手写墨迹不参与识别）；
+    True 时把注释一并渲染进图像（内嵌扫描图路径不含注释，有注释时强制渲染合成）。
 
     返回 (numpy 数组, 宽, 高)。
     """
     import numpy as np
     pix = None
     imgs = page.get_images()
-    if len(imgs) == 1:
+    if len(imgs) == 1 and not (include_annots and page.first_annot):
         pix = fitz.Pixmap(doc, imgs[0][0])
         if pix.width < 800 or pix.height < 800:
             pix = None  # 内嵌图太小，不像整页扫描，改用渲染
     if pix is None:
-        pix = page.get_pixmap(dpi=200, alpha=False)
+        pix = page.get_pixmap(dpi=200, alpha=False, annots=include_annots)
     if pix.colorspace and pix.colorspace.n > 3:
         pix = fitz.Pixmap(fitz.csRGB, pix)
     arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
     return arr, pix.width, pix.height
 
 
-def ocr_page(doc: fitz.Document, page: fitz.Page) -> list[dict]:
-    """OCR 单页，返回 [{'text', 'rect', 'size'}]，坐标为 PDF 页面坐标。"""
+def ocr_page(doc: fitz.Document, page: fitz.Page, include_annots: bool = False) -> list[dict]:
+    """OCR 单页，返回 [{'text', 'rect', 'size'}]，坐标为 PDF 页面坐标。
+
+    include_annots=False（默认）：不识别用户加的批注/留言墨迹；
+    True：批注墨迹一并渲染识别。
+    """
     engine = get_engine()
-    arr, iw, ih = page_image_array(doc, page)
+    arr, iw, ih = page_image_array(doc, page, include_annots)
     result, _ = engine(arr)
     lines: list[dict] = []
     if not result:
@@ -528,8 +535,27 @@ def write_text_layer(page: fitz.Page, lines: list[dict]) -> None:
                              render_mode=3)
 
 
-def ocr_pdf(pdf_path: str, out_path: str, progress_cb=None, cancel_check=None) -> str | None:
+def note_annot_lines(page: fitz.Page) -> list[dict]:
+    """把页面上的留言（Text 注释）内容转为隐形文字行，写入文字层后可搜索。"""
+    lines: list[dict] = []
+    for annot in page.annots(types=(fitz.PDF_ANNOT_TEXT,)) or []:
+        content = (annot.info.get("content") or "").strip()
+        if not content:
+            continue
+        r = annot.rect
+        # 便签图标很小，文字框向右下延展以容纳内容
+        rect = fitz.Rect(r.x0, r.y0, min(r.x0 + 200, page.rect.x1),
+                         min(r.y1 + 14 * (content.count("\n") + 1), page.rect.y1))
+        lines.append({"text": content, "rect": rect, "size": 9})
+    return lines
+
+
+def ocr_pdf(pdf_path: str, out_path: str, include_annots: bool = False,
+            progress_cb=None, cancel_check=None) -> str | None:
     """为整个 PDF 添加 OCR 文字层并另存。已有文字的页自动跳过。
+
+    include_annots=False（默认）：不识别用户加的批注/留言（手写墨迹不参与识别）；
+    True：批注墨迹一并渲染识别，留言文字写入隐形文字层（可搜索、可复制）。
 
     返回输出路径；被取消时返回 None（不生成半成品文件）。
     """
@@ -543,7 +569,10 @@ def ocr_pdf(pdf_path: str, out_path: str, progress_cb=None, cancel_check=None) -
                 break
             page = doc.load_page(i)
             if not page.get_text().strip():
-                write_text_layer(page, ocr_page(doc, page))
+                lines = ocr_page(doc, page, include_annots=include_annots)
+                if include_annots:
+                    lines += note_annot_lines(page)
+                write_text_layer(page, lines)
             if progress_cb:
                 progress_cb(i + 1, total)
         if cancelled:

@@ -177,7 +177,12 @@ def detect_headings(
     progress_cb=None,
     cancel_check=None,
 ) -> list[dict]:
-    """根据字号、粗体和章节编号模式识别标题，返回 [{'level','title','page'(0 起始)}]。"""
+    """根据字号、粗体和章节编号模式识别标题，返回 [{'level','title','page'(0 起始)}]。
+
+    编号类标题（1.2 / 1 xxx 等）需通过上下文一致性过滤：同级同前缀的编号须形成
+    递增序列才保留，以此剔除孤立的小数（3.14）、公式编号和正文中的交叉引用。
+    OCR 路径默认不识别用户添加的批注/留言墨迹。
+    """
     if use_ocr:
         from . import ocr_service
         ocr_service.get_engine()  # 提前加载模型，依赖缺失时尽早报错
@@ -222,7 +227,7 @@ def detect_headings(
                     if len(text) >= 30:
                         page_counter[rsize] = page_counter.get(rsize, 0) + len(text)
             if use_ocr and not had_text:
-                # 扫描页：OCR 识别文字，字号用文本框高度近似
+                # 扫描页：OCR 识别文字，字号用文本框高度近似；默认不识别批注/留言墨迹
                 from . import ocr_service
                 for ol in ocr_service.ocr_page(doc, page):
                     text = ol["text"]
@@ -268,18 +273,24 @@ def detect_headings(
     use_font = mode in ("both", "font")
     use_num = mode in ("both", "numbering")
 
-    def numbering_level(text: str) -> tuple[int, str] | None:
-        """返回 (层级, 类型)：strong=章节关键词，dotted=带点编号，plain=单整数编号。"""
+    def numbering_level(text: str) -> tuple[int, str, list[int] | None] | None:
+        """返回 (层级, 类型, 编号各段数值)：strong=章节关键词，dotted=带点编号，plain=单整数编号。
+
+        编号首段须 ≥1、每段 ≤99、最多 5 段，否则视为小数/年份等非章节编号。
+        """
         m = RE_CHINESE_HEADING.match(text)
         if m:
-            return min(CHAPTER_LEVEL.get(m.group(1), 1), max_level), "strong"
+            return min(CHAPTER_LEVEL.get(m.group(1), 1), max_level), "strong", None
         m = RE_EN_HEADING.match(text)
         if m:
-            return (2 if m.group(1).lower() == "section" else 1), "strong"
+            return (2 if m.group(1).lower() == "section" else 1), "strong", None
         m = RE_NUM_HEADING.match(text) or RE_NUM_BARE.match(text)
         if m:
+            comps = [int(c) for c in m.group(1).split(".")]
+            if comps[0] < 1 or len(comps) > 5 or any(c > 99 for c in comps):
+                return None  # 小数（3.14）、年份（2024）等
             kind = "dotted" if "." in m.group(1) else "plain"
-            return min(m.group(1).count(".") + 1, max_level), kind
+            return min(len(comps), max_level), kind, comps
         return None
 
     def mostly_words(text: str) -> bool:
@@ -307,17 +318,22 @@ def detect_headings(
         numbered = numbering_level(text) if use_num else None
         nlvl = numbered[0] if numbered else None
         level = None
+        num_comps = None
         if numbered is not None and len(text) <= 80:
             kind = numbered[1]
             if kind == "strong" and mostly_words(text):
                 level = nlvl
-            elif kind == "dotted" and (r["bold"] or r["size"] >= body * 0.9):
-                # 带点编号（如 "1.2 xxx" 或单独成行的 "1.2"），容忍 OCR 缩放导致的轻微偏小
+            elif kind == "dotted" and mostly_words(text) \
+                    and (r["bold"] or r["size"] >= body * 0.9):
+                # 带点编号（如 "1.2 xxx" 或单独成行的 "1.2"），容忍 OCR 缩放导致的轻微偏小；
+                # 需以词为主体，过滤 "1.2 V=IR" 之类的公式行
                 level = nlvl
+                num_comps = numbered[2][:nlvl]
             elif kind == "plain" and mostly_words(text) \
                     and (r["bold"] or r["size"] >= body * 1.08):
                 # 单整数编号（如 "1 xxx"）最易误伤习题号、年份，需粗体或明显大字号佐证
                 level = nlvl
+                num_comps = numbered[2][:nlvl]
         if level is None and use_font and len(text) <= 60 \
                 and mostly_words(text) and RE_HEADING_START.match(text) \
                 and r["size"] in size_level and r["size"] >= body * 1.12:
@@ -327,7 +343,13 @@ def detect_headings(
         # 反复出现的页眉页脚文本，除非明显是标题（带编号或字号很大）
         if text in repeated and not (nlvl is not None or r["size"] >= body * 1.3):
             continue
-        headings.append({"level": level, "title": text, "page": r["page"]})
+        entry = {"level": level, "title": text, "page": r["page"]}
+        if num_comps:
+            # 编号类标题记录上下文信息，供序列一致性过滤
+            entry.update(num=num_comps, bold=r["bold"], size=r["size"])
+        headings.append(entry)
+
+    headings = _filter_numbering_by_sequence(headings)
 
     # 同页连续的同级标题行合并为一个（多行排版的标题会被拆成多条）
     merged: list[dict] = []
@@ -340,6 +362,77 @@ def detect_headings(
             merged.append(dict(h))
 
     return normalize_toc(merged)
+
+
+def _filter_numbering_by_sequence(headings: list[dict]) -> list[dict]:
+    """编号类标题的上下文一致性过滤：同一组编号（同级、同前缀）必须按页面先后
+    形成递增序列（步长 ≤10）才保留；孤立编号（小数、公式编号、交叉引用等）剔除。
+
+    重复编号（正文中的交叉引用，如 "3.2 节所述"）只保留最像标题的一处
+    （优先粗体、再大字号、再靠前者）。
+    """
+    groups: dict[tuple, list[int]] = {}
+    for idx, h in enumerate(headings):
+        comps = h.get("num")
+        if comps:
+            key = (h["level"], tuple(comps[:-1]))
+            groups.setdefault(key, []).append(idx)
+    if not groups:
+        for h in headings:
+            h.pop("num", None)
+            h.pop("bold", None)
+            h.pop("size", None)
+        return headings
+
+    drop: set[int] = set()
+    for key, idxs in groups.items():
+        vals = {i: headings[i]["num"][-1] for i in idxs}
+        # 在首次出现的编号序列上找递增段（段长 ≥2 才算有上下文佐证）
+        supported_vals: set[int] = set()
+        run: list[int] = []
+        prev: int | None = None
+        seen: set[int] = set()
+        for i in idxs:
+            v = vals[i]
+            if v in seen:
+                continue  # 重复编号不参与序列构建
+            seen.add(v)
+            if prev is None or (v > prev and v - prev <= 10):
+                run.append(v)
+            else:
+                if len(run) >= 2:
+                    supported_vals.update(run)
+                run = [v]
+            prev = v
+        if len(run) >= 2:
+            supported_vals.update(run)
+        # 每个被支持的编号只留最像标题的一处
+        best: dict[int, int] = {}
+        for i in idxs:
+            v = vals[i]
+            if v not in supported_vals:
+                drop.add(i)
+                continue
+            h = headings[i]
+            if v not in best:
+                best[v] = i
+                continue
+            b = headings[best[v]]
+            if (h["bold"], h["size"]) > (b["bold"], b["size"]):
+                drop.add(best[v])
+                best[v] = i
+            else:
+                drop.add(i)
+
+    out = []
+    for i, h in enumerate(headings):
+        if i in drop:
+            continue
+        h.pop("num", None)
+        h.pop("bold", None)
+        h.pop("size", None)
+        out.append(h)
+    return out
 
 
 def section_pages(toc: list[dict], index: int, total_pages: int) -> list[int]:
