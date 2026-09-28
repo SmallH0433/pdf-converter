@@ -78,13 +78,35 @@ def _seg_dist(px: float, py: float, a: tuple, b: tuple) -> float:
     return ((px - cx) ** 2 + (py - cy) ** 2) ** 0.5
 
 
+def _point_in_polygon(x: float, y: float, poly: list[tuple[float, float]]) -> bool:
+    """射线法判断点是否在多边形内（圈选命中判定）。"""
+    inside = False
+    j = len(poly) - 1
+    for i in range(len(poly)):
+        xi, yi = poly[i]
+        xj, yj = poly[j]
+        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+def _rotate_about(x: float, y: float, cx: float, cy: float,
+                  cos_a: float, sin_a: float) -> tuple[float, float]:
+    """点 (x, y) 绕 (cx, cy) 旋转（cos/sin 预计算）。"""
+    dx, dy = x - cx, y - cy
+    return cx + dx * cos_a - dy * sin_a, cy + dx * sin_a + dy * cos_a
+
+
 class PageCanvas(QWidget):
-    """单页画布：渲染页面位图，处理手写 / 橡皮 / 便签交互，叠加搜索高亮。"""
+    """单页画布：渲染页面位图，处理手写 / 橡皮 / 便签 / 笔画选择交互，叠加搜索高亮。"""
 
     annot_added = Signal(int)      # 新建注释的 xref
     annot_deleted = Signal(int)    # 被擦除注释的 xref
     note_place = Signal(float, float)  # 请求在 (x, y)（PDF 坐标）放置留言
     note_clicked = Signal(object)      # 点击了已有便签（fitz.Annot）
+    selection_changed = Signal(int)    # 选中笔画数量（0 = 取消选择）
+    annot_modified = Signal()          # 注释被原位修改（改色等），仅置脏
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -92,7 +114,7 @@ class PageCanvas(QWidget):
         self._doc: fitz.Document | None = None
         self._page_index = 0
         self.zoom = 1.5
-        self.tool = "select"  # select / pen / note / eraser
+        self.tool = "select"  # select / pen / note / eraser / select_stroke
         self.pen_color = PEN_COLORS["红"]
         self.pen_width = 3
         self._pixmap: QPixmap | None = None
@@ -100,6 +122,14 @@ class PageCanvas(QWidget):
         self._stroking = False
         self._erasing = False
         self._highlights: list[tuple[fitz.Rect, bool]] = []
+        # ---- 笔画选择（框选/圈选） ----
+        self.sel_mode = "rect"       # rect（框选）/ lasso（圈选）
+        self._sel_drag: list[tuple[float, float]] = []  # 拖拽路径（视图像素）
+        self._sel_items: list[dict] = []  # {'xref','strokes','color','width'}
+        self._sel_bbox: fitz.Rect | None = None
+        self._moving = False
+        self._move_start = (0.0, 0.0)
+        self._move_delta = (0.0, 0.0)  # 预览位移（PDF pt）
 
     # ---- 渲染 ----
 
@@ -108,6 +138,7 @@ class PageCanvas(QWidget):
         self._page_index = page_index
         self._stroke = []
         self._stroking = self._erasing = False
+        self.clear_selection()
         self.render()
 
     def render(self):
@@ -167,6 +198,175 @@ class PageCanvas(QWidget):
                     p.setPen(QPen(color, w, Qt.PenStyle.SolidLine,
                                   Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
                     p.drawLine(QPointF(x0 * z, y0 * z), QPointF(x1 * z, y1 * z))
+        self._paint_selection(p)
+
+    # ---- 笔画选择（框选 / 圈选） ----
+
+    def _paint_selection(self, p: QPainter):
+        z = self.zoom
+        dash = QPen(QColor(30, 100, 255), 1.5, Qt.PenStyle.DashLine)
+        # 选中笔画的移动预览（原位仍显示，半透明画出偏移后的位置）
+        if self._sel_items and (self._move_delta[0] or self._move_delta[1]):
+            dx, dy = self._move_delta
+            for item in self._sel_items:
+                c = item["color"]
+                color = QColor.fromRgbF(c[0], c[1], c[2], 0.55)
+                for stroke in item["strokes"]:
+                    for i in range(1, len(stroke)):
+                        x0, y0 = stroke[i - 1]
+                        x1, y1 = stroke[i]
+                        p.setPen(QPen(color, max(0.6, item["width"] * z),
+                                      Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                                      Qt.PenJoinStyle.RoundJoin))
+                        p.drawLine(QPointF((x0 + dx) * z, (y0 + dy) * z),
+                                   QPointF((x1 + dx) * z, (y1 + dy) * z))
+        # 选中包围盒
+        if self._sel_bbox:
+            b = self._sel_bbox
+            dx, dy = self._move_delta
+            p.setPen(dash)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRect(QRectF((b.x0 + dx) * z, (b.y0 + dy) * z,
+                              b.width * z, b.height * z))
+        # 拖拽中的选择框 / 套索
+        if len(self._sel_drag) >= 2:
+            p.setPen(dash)
+            if self.sel_mode == "rect":
+                (x0, y0), (x1, y1) = self._sel_drag[0], self._sel_drag[-1]
+                p.drawRect(QRectF(QPointF(x0, y0), QPointF(x1, y1)))
+            else:
+                for i in range(1, len(self._sel_drag)):
+                    p.drawLine(QPointF(*self._sel_drag[i - 1]),
+                               QPointF(*self._sel_drag[i]))
+
+    def clear_selection(self):
+        if self._sel_items:
+            self._sel_items = []
+            self._sel_bbox = None
+            self.selection_changed.emit(0)
+        self._sel_drag = []
+        self._moving = False
+        self._move_delta = (0.0, 0.0)
+        self.update()
+
+    def _find_annot(self, page, xref: int):
+        for annot in page.annots():
+            if annot.xref == xref:
+                return annot
+        return None
+
+    def _finish_select(self):
+        """按拖拽路径命中本页 ink 注释，建立选区。"""
+        path_view = self._sel_drag
+        self._sel_drag = []
+        self.clear_selection()
+        if len(path_view) < 2 or not self._doc:
+            return
+        path_pdf = [(x / self.zoom, y / self.zoom) for x, y in path_view]
+        if self.sel_mode == "rect":
+            xs = [p[0] for p in path_pdf]
+            ys = [p[1] for p in path_pdf]
+            region = fitz.Rect(min(xs), min(ys), max(xs), max(ys))
+            if region.width < 2 and region.height < 2:
+                return
+            hit = lambda x, y: region.contains(fitz.Point(x, y))
+        else:
+            hit = lambda x, y: _point_in_polygon(x, y, path_pdf)
+        page = self._doc.load_page(self._page_index)
+        for annot in page.annots(types=(fitz.PDF_ANNOT_INK,)):
+            strokes = [[(float(pt[0]), float(pt[1])) for pt in s]
+                       for s in (annot.vertices or [])]
+            strokes = [s for s in strokes if len(s) >= 2]
+            if not strokes:
+                continue
+            if any(hit(x, y) for s in strokes for x, y in s):
+                c = annot.colors.get("stroke") or (1, 0, 0)
+                self._sel_items.append({
+                    "xref": annot.xref, "strokes": strokes,
+                    "color": tuple(c), "width": annot.border.get("width", 2)})
+        if self._sel_items:
+            self._recompute_bbox()
+            self.selection_changed.emit(len(self._sel_items))
+        self.update()
+
+    def _recompute_bbox(self):
+        xs = [x for item in self._sel_items for s in item["strokes"] for x, _ in s]
+        ys = [y for item in self._sel_items for s in item["strokes"] for _, y in s]
+        self._sel_bbox = fitz.Rect(min(xs), min(ys), max(xs), max(ys)) if xs else None
+
+    def _apply_transform(self, fn):
+        """对选中笔画应用坐标变换 fn(x, y) -> (x', y')：删除旧注释、按新顶点重建。"""
+        if not self._doc or not self._sel_items:
+            return
+        page = self._doc.load_page(self._page_index)
+        for item in self._sel_items:
+            annot = self._find_annot(page, item["xref"])
+            new_strokes = [[fn(x, y) for x, y in s] for s in item["strokes"]]
+            if annot is not None:
+                old_xref = annot.xref
+                page.delete_annot(annot)
+                self.annot_deleted.emit(old_xref)
+            na = page.add_ink_annot(new_strokes)
+            na.set_colors(stroke=item["color"])
+            na.set_border(width=item["width"])
+            na.update()
+            item["strokes"] = new_strokes
+            item["xref"] = na.xref
+            self.annot_added.emit(na.xref)
+        self._recompute_bbox()
+        self.render()
+
+    def move_selection(self, dx: float, dy: float):
+        self._apply_transform(lambda x, y: (x + dx, y + dy))
+
+    def scale_selection(self, factor: float):
+        if not self._sel_bbox:
+            return
+        cx = (self._sel_bbox.x0 + self._sel_bbox.x1) / 2
+        cy = (self._sel_bbox.y0 + self._sel_bbox.y1) / 2
+        self._apply_transform(lambda x, y: (cx + (x - cx) * factor,
+                                            cy + (y - cy) * factor))
+
+    def rotate_selection(self, degrees: float):
+        if not self._sel_bbox:
+            return
+        import math
+        a = math.radians(degrees)
+        cos_a, sin_a = math.cos(a), math.sin(a)
+        cx = (self._sel_bbox.x0 + self._sel_bbox.x1) / 2
+        cy = (self._sel_bbox.y0 + self._sel_bbox.y1) / 2
+        self._apply_transform(
+            lambda x, y: _rotate_about(x, y, cx, cy, cos_a, sin_a))
+
+    def color_selection(self, color: tuple):
+        """改选中笔画颜色（原位修改，无需重建）。"""
+        if not self._doc or not self._sel_items:
+            return
+        page = self._doc.load_page(self._page_index)
+        for item in self._sel_items:
+            annot = self._find_annot(page, item["xref"])
+            if annot is not None:
+                annot.set_colors(stroke=color)
+                annot.update()
+            item["color"] = color
+        self.annot_modified.emit()
+        self.render()
+
+    def delete_selection(self):
+        if not self._doc or not self._sel_items:
+            return
+        page = self._doc.load_page(self._page_index)
+        for item in self._sel_items:
+            annot = self._find_annot(page, item["xref"])
+            if annot is not None:
+                page.delete_annot(annot)
+                self.annot_deleted.emit(annot.xref)
+        self.clear_selection()
+        self.render()
+
+    @property
+    def has_selection(self) -> bool:
+        return bool(self._sel_items)
 
     # ---- 坐标换算 ----
 
@@ -212,7 +412,16 @@ class PageCanvas(QWidget):
         if e.button() != Qt.MouseButton.LeftButton or not self._doc:
             return
         pos = e.position()
-        if self.tool == "pen":
+        if self.tool == "select_stroke":
+            x, y = self._to_pdf(pos)
+            # 已有选区：点在包围盒内 → 开始拖动；点在外 → 取消并重新框选
+            if self._sel_bbox and self._sel_bbox.contains(fitz.Point(x, y)):
+                self._moving = True
+                self._move_start = (pos.x(), pos.y())
+                self._move_delta = (0.0, 0.0)
+            else:
+                self._sel_drag = [(pos.x(), pos.y())]
+        elif self.tool == "pen":
             if not pen_input.mouse_draws():
                 return  # Android 等触屏平台：手指用于滚动翻页，仅手写笔书写
             self._begin_stroke(pos, 0.6)
@@ -230,6 +439,16 @@ class PageCanvas(QWidget):
                 self.note_place.emit(x, y)
 
     def mouseMoveEvent(self, e):
+        if self.tool == "select_stroke":
+            if self._moving and e.buttons() & Qt.MouseButton.LeftButton:
+                dx = (e.position().x() - self._move_start[0]) / self.zoom
+                dy = (e.position().y() - self._move_start[1]) / self.zoom
+                self._move_delta = (dx, dy)
+                self.update()
+            elif self._sel_drag and e.buttons() & Qt.MouseButton.LeftButton:
+                self._sel_drag.append((e.position().x(), e.position().y()))
+                self.update()
+            return
         if self._stroking and e.buttons() & Qt.MouseButton.LeftButton:
             self._extend_stroke(e.position(), 0.6)
         elif self._erasing and e.buttons() & Qt.MouseButton.LeftButton:
@@ -237,6 +456,18 @@ class PageCanvas(QWidget):
 
     def mouseReleaseEvent(self, e):
         if e.button() != Qt.MouseButton.LeftButton:
+            return
+        if self.tool == "select_stroke":
+            if self._moving:
+                self._moving = False
+                dx, dy = self._move_delta
+                self._move_delta = (0.0, 0.0)
+                if abs(dx) + abs(dy) > 0.5:
+                    self.move_selection(dx, dy)
+                else:
+                    self.update()
+            elif self._sel_drag:
+                self._finish_select()
             return
         if self._stroking:
             self._end_stroke()
@@ -430,6 +661,8 @@ class ReaderPage(QWidget):
             ("pen", FIF.PENCIL_INK, f"手写标注（{pen_input.backend_name()}，支持压感）"),
             ("note", FIF.QUICK_NOTE, "留言便签"),
             ("eraser", FIF.ERASE_TOOL, "橡皮擦（手写笔橡皮端自动切换）"),
+            ("select_stroke", FIF.CLIPPING_TOOL,
+             "选择笔画：拖拽框选/圈选，选中后可移动、缩放、旋转、改色、删除"),
         ):
             btn = ToolButton(icon, bar2)
             btn.setCheckable(True)
@@ -438,6 +671,15 @@ class ReaderPage(QWidget):
             self.tool_btns[key] = btn
             row2.addWidget(btn)
         self.tool_btns["select"].setChecked(True)
+
+        # 框选 / 圈选切换（选择笔画工具下生效）
+        self.sel_mode_combo = ComboBox(bar2)
+        self.sel_mode_combo.addItems(["框选", "圈选"])
+        self.sel_mode_combo.setFixedWidth(92)
+        self.sel_mode_combo.currentTextChanged.connect(
+            lambda t: setattr(self.canvas, "sel_mode",
+                              "rect" if t == "框选" else "lasso"))
+        row2.addWidget(self.sel_mode_combo)
 
         row2.addWidget(CaptionLabel("笔色", bar2))
         self.color_combo = ComboBox(bar2)
@@ -476,6 +718,41 @@ class ReaderPage(QWidget):
         row2.addWidget(self.save_as_btn)
         root.addWidget(bar2)
 
+        # ---- 工具行 3：选中笔画操作（有选区时显示） ----
+        self.sel_bar = CardWidget(self)
+        row3 = QHBoxLayout(self.sel_bar)
+        row3.setContentsMargins(14, 8, 14, 8)
+        row3.setSpacing(8)
+        self.sel_count_label = BodyLabel("已选 0 笔", self.sel_bar)
+        row3.addWidget(self.sel_count_label)
+        row3.addWidget(CaptionLabel("颜色", self.sel_bar))
+        self.sel_color_combo = ComboBox(self.sel_bar)
+        self.sel_color_combo.addItems(PEN_COLORS.keys())
+        self.sel_color_combo.setFixedWidth(84)
+        self.sel_color_combo.currentTextChanged.connect(
+            lambda t: self.canvas.color_selection(PEN_COLORS[t]))
+        row3.addWidget(self.sel_color_combo)
+        for text, tip, fn in (
+            ("放大", "放大 10%", lambda: self.canvas.scale_selection(1.1)),
+            ("缩小", "缩小 10%", lambda: self.canvas.scale_selection(1 / 1.1)),
+            ("左旋", "逆时针旋转 15°", lambda: self.canvas.rotate_selection(15)),
+            ("右旋", "顺时针旋转 15°", lambda: self.canvas.rotate_selection(-15)),
+        ):
+            b = PushButton(text, self.sel_bar)
+            b.setToolTip(tip)
+            b.clicked.connect(fn)
+            row3.addWidget(b)
+        del_btn = PushButton("删除", self.sel_bar)
+        del_btn.clicked.connect(lambda: self.canvas.delete_selection())
+        row3.addWidget(del_btn)
+        row3.addStretch(1)
+        done_btn = PushButton("完成", self.sel_bar)
+        done_btn.setToolTip("取消选区")
+        done_btn.clicked.connect(lambda: self.canvas.clear_selection())
+        row3.addWidget(done_btn)
+        self.sel_bar.setVisible(False)
+        root.addWidget(self.sel_bar)
+
         # ---- 主体：缩略图 / 画布 / 查找面板 ----
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         self.thumb_list = ListWidget(splitter)
@@ -490,6 +767,8 @@ class ReaderPage(QWidget):
         self.canvas.annot_deleted.connect(self._on_annot_deleted)
         self.canvas.note_place.connect(self._place_note)
         self.canvas.note_clicked.connect(self._edit_note)
+        self.canvas.selection_changed.connect(self._on_selection_changed)
+        self.canvas.annot_modified.connect(self._on_annot_modified)
         self.scroll = ScrollArea(splitter)
         self.scroll.setWidget(self.canvas)
         self.scroll.setWidgetResizable(False)
@@ -711,13 +990,15 @@ class ReaderPage(QWidget):
     # ---- 工具 / 标注 ----
 
     def _set_tool(self, key: str):
+        if key != "select_stroke":
+            self.canvas.clear_selection()
         self.canvas.tool = key
         for k, btn in self.tool_btns.items():
             btn.blockSignals(True)
             btn.setChecked(k == key)
             btn.blockSignals(False)
         self.canvas.setCursor(
-            Qt.CursorShape.CrossCursor if key in ("pen", "eraser")
+            Qt.CursorShape.CrossCursor if key in ("pen", "eraser", "select_stroke")
             else Qt.CursorShape.ArrowCursor)
 
     def _on_pen_style(self):
@@ -733,6 +1014,14 @@ class ReaderPage(QWidget):
         self._undo_stack = [(p, x) for p, x in self._undo_stack if x != xref]
         self._dirty = True
         self._update_ui_state()
+
+    def _on_annot_modified(self):
+        self._dirty = True
+        self._update_ui_state()
+
+    def _on_selection_changed(self, count: int):
+        self.sel_count_label.setText(f"已选 {count} 笔")
+        self.sel_bar.setVisible(count > 0)
 
     def _undo(self):
         if not self._doc:

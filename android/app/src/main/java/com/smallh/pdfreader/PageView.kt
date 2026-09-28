@@ -60,6 +60,17 @@ class PageView(context: Context) : View(context) {
     private var downY = 0f
     private var downTime = 0L
 
+    // ---- 笔画选择（框选/圈选） ----
+    var selModeRect = true              // true=框选（矩形） false=圈选（套索）
+    private val selPath = mutableListOf<Pair<Float, Float>>()  // 拖拽路径（视图 px）
+    private val selectedStrokes = mutableListOf<Stroke>()
+    private var selBBox: RectF? = null  // PDF 坐标（y 向上；top=minY, bottom=maxY）
+    private var movingSel = false
+    private var moveLastX = 0f
+    private var moveLastY = 0f
+    var onSelectionChanged: ((Int) -> Unit)? = null
+    val hasSelection: Boolean get() = selectedStrokes.isNotEmpty()
+
     private val highlights = mutableListOf<Pair<RectF, Boolean>>() // top-down 坐标, 是否当前条
 
     private val renderRunnable = Runnable { doRender() }
@@ -96,6 +107,7 @@ class PageView(context: Context) : View(context) {
         pageIndex = index.coerceIn(0, s.pageCount - 1)
         currentStroke = null
         currentStrokePoints.clear()
+        clearSelection()
         fitToWidth()
     }
 
@@ -204,7 +216,179 @@ class PageView(context: Context) : View(context) {
             }
             canvas.drawText("留", note.x, ny + 4, tp)
         }
+        drawSelectionOverlay(canvas, s.pageHeight(pageIndex))
         canvas.restore()
+    }
+
+    // ---- 笔画选择（框选/圈选） ----
+
+    private fun drawSelectionOverlay(canvas: Canvas, pageH: Float) {
+        val dash = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            color = Color.rgb(30, 100, 255)
+            strokeWidth = 1.5f
+            pathEffect = android.graphics.DashPathEffect(floatArrayOf(8f, 6f), 0f)
+        }
+        // 选中包围盒（PDF y 向上 → top-down 翻转）
+        selBBox?.let { b ->
+            canvas.drawRect(RectF(b.left, pageH - b.bottom, b.right, pageH - b.top), dash)
+        }
+        // 拖拽中的选择框 / 套索（selPath 为视图 px，需换算到 top-down 页面坐标）
+        if (selPath.size >= 2) {
+            val scale = totalScale()
+            fun vx(v: Float) = (v - offsetX) / scale
+            fun vy(v: Float) = (v - offsetY) / scale
+            if (selModeRect) {
+                val (x0, y0) = selPath.first()
+                val (x1, y1) = selPath.last()
+                canvas.drawRect(RectF(minOf(vx(x0), vx(x1)), minOf(vy(y0), vy(y1)),
+                                      maxOf(vx(x0), vx(x1)), maxOf(vy(y0), vy(y1))), dash)
+            } else {
+                for (i in 1 until selPath.size) {
+                    canvas.drawLine(vx(selPath[i - 1].first), vy(selPath[i - 1].second),
+                                    vx(selPath[i].first), vy(selPath[i].second), dash)
+                }
+            }
+        }
+    }
+
+    private fun beginSelectOrMove(vx: Float, vy: Float) {
+        val (px, py) = viewToPdf(vx, vy)
+        val b = selBBox
+        if (b != null && px >= b.left && px <= b.right && py >= b.top && py <= b.bottom) {
+            movingSel = true   // 点在包围盒内：拖动选区
+            moveLastX = vx
+            moveLastY = vy
+        } else {
+            clearSelection()
+            selPath.add(vx to vy)
+        }
+    }
+
+    private fun moveSelectionBy(vx: Float, vy: Float) {
+        val scale = totalScale()
+        val dpx = (vx - moveLastX) / scale
+        val dpy = -(vy - moveLastY) / scale   // 视图 y 向下 → PDF y 向上取负
+        moveLastX = vx
+        moveLastY = vy
+        for (s in selectedStrokes) {
+            for (i in s.points.indices) {
+                val (x, y, p) = s.points[i]
+                s.points[i] = Triple(x + dpx, y + dpy, p)
+            }
+        }
+        selBBox?.let {
+            it.left += dpx
+            it.right += dpx
+            it.top += dpy
+            it.bottom += dpy
+        }
+        invalidate()
+    }
+
+    private fun finishSelect() {
+        val s = session ?: return
+        if (selPath.size < 2) {
+            selPath.clear()
+            return
+        }
+        val pdfPts = selPath.map { (vx, vy) -> viewToPdf(vx, vy) }
+        selPath.clear()
+        val hit: (Float, Float) -> Boolean
+        if (selModeRect) {
+            val xs = pdfPts.map { it.first }
+            val ys = pdfPts.map { it.second }
+            val l = xs.min(); val r = xs.max()
+            val b = ys.min(); val t = ys.max()
+            if (r - l < 2 && t - b < 2) return
+            hit = { x, y -> x in l..r && y in b..t }
+        } else {
+            hit = { x, y -> pointInPolygon(x, y, pdfPts) }
+        }
+        selectedStrokes.clear()
+        for (stroke in s.strokesOf(pageIndex)) {
+            if (stroke.points.any { (x, y, _) -> hit(x, y) }) {
+                selectedStrokes.add(stroke)
+            }
+        }
+        recomputeSelBBox()
+        onSelectionChanged?.invoke(selectedStrokes.size)
+        invalidate()
+    }
+
+    private fun recomputeSelBBox() {
+        selBBox = if (selectedStrokes.isEmpty()) null else {
+            val xs = selectedStrokes.flatMap { s -> s.points.map { it.first } }
+            val ys = selectedStrokes.flatMap { s -> s.points.map { it.second } }
+            RectF(xs.min(), ys.min(), xs.max(), ys.max())
+        }
+    }
+
+    /** 对选中笔画应用坐标变换 fn(x, y) -> (x', y')。 */
+    fun transformSelection(fn: (Float, Float) -> Pair<Float, Float>) {
+        val s = session ?: return
+        for (stroke in selectedStrokes) {
+            for (i in stroke.points.indices) {
+                val (x, y, p) = stroke.points[i]
+                val (nx, ny) = fn(x, y)
+                stroke.points[i] = Triple(nx, ny, p)
+            }
+            s.markModified(pageIndex, stroke)
+        }
+        recomputeSelBBox()
+        onChanged?.invoke()
+        invalidate()
+    }
+
+    fun scaleSelection(factor: Float) {
+        val b = selBBox ?: return
+        val cx = b.centerX()
+        val cy = b.centerY()
+        transformSelection { x, y -> cx + (x - cx) * factor to cy + (y - cy) * factor }
+    }
+
+    fun rotateSelection(degrees: Float) {
+        val b = selBBox ?: return
+        val a = Math.toRadians(degrees.toDouble())
+        val cosA = kotlin.math.cos(a).toFloat()
+        val sinA = kotlin.math.sin(a).toFloat()
+        val cx = b.centerX()
+        val cy = b.centerY()
+        transformSelection { x, y ->
+            val dx = x - cx
+            val dy = y - cy
+            cx + dx * cosA - dy * sinA to cy + dx * sinA + dy * cosA
+        }
+    }
+
+    fun colorSelection(color: Int) {
+        val s = session ?: return
+        for (stroke in selectedStrokes) {
+            stroke.color = color
+            s.markModified(pageIndex, stroke)
+        }
+        onChanged?.invoke()
+        invalidate()
+    }
+
+    fun deleteSelection() {
+        val s = session ?: return
+        for (stroke in selectedStrokes) {
+            s.markModified(pageIndex, stroke)
+            s.strokes[pageIndex]?.remove(stroke)
+        }
+        clearSelection()
+        onChanged?.invoke()
+    }
+
+    fun clearSelection() {
+        val had = selectedStrokes.isNotEmpty()
+        selectedStrokes.clear()
+        selBBox = null
+        selPath.clear()
+        movingSel = false
+        if (had) onSelectionChanged?.invoke(0)
+        invalidate()
     }
 
     private fun drawStroke(canvas: Canvas, stroke: Stroke, pageH: Float) {
@@ -254,6 +438,7 @@ class PageView(context: Context) : View(context) {
                                 erasingActive = true
                                 eraseAt(event.x, event.y)
                             }
+                            Tool.SELECT_STROKE -> beginSelectOrMove(event.x, event.y)
                             else -> handleTap(event.x, event.y)
                         }
                     }
@@ -279,6 +464,7 @@ class PageView(context: Context) : View(context) {
                             }
                             // 选择/留言：单指只用于轻点交互，不拖动页面
                             // （所有工具统一：单指=使用工具，双指=拖动/缩放页面）
+                            Tool.SELECT_STROKE -> beginSelectOrMove(event.x, event.y)
                             else -> {}
                         }
                     }
@@ -299,6 +485,8 @@ class PageView(context: Context) : View(context) {
                     drawPointer = -1
                     erasingActive = false
                 }
+                selPath.clear()
+                movingSel = false
                 tapMoved = true
                 if (!stylusDown && event.pointerCount >= 2) { // 手写笔在屏时忽略手指（手掌排斥）
                     twoFingerPan = true
@@ -315,6 +503,15 @@ class PageView(context: Context) : View(context) {
                     lastPanX = mx
                     lastPanY = my
                     clampOffsets()
+                    invalidate()
+                    return true
+                }
+                if (movingSel) {
+                    moveSelectionBy(event.x, event.y)
+                    return true
+                }
+                if (selPath.isNotEmpty()) {
+                    selPath.add(event.x to event.y)
                     invalidate()
                     return true
                 }
@@ -340,6 +537,17 @@ class PageView(context: Context) : View(context) {
                     if (!erasingActive) finishStroke()
                     drawPointer = -1
                     erasingActive = false
+                }
+                // 选区拖动结束：把位移写入文档模型（标记需重新保存）
+                if (movingSel) {
+                    movingSel = false
+                    val s2 = session
+                    if (s2 != null) {
+                        for (stroke in selectedStrokes) s2.markModified(pageIndex, stroke)
+                        if (selectedStrokes.isNotEmpty()) onChanged?.invoke()
+                    }
+                } else if (selPath.isNotEmpty()) {
+                    finishSelect()
                 }
                 // 轻点（选择/留言模式、未拖动）：便签编辑 / 留言放置
                 val dt = event.eventTime - downTime

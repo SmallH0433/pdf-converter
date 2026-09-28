@@ -95,8 +95,32 @@ class PdfSession(context: Context, val file: File) {
     }
 
     fun removeNote(page: Int, note: NoteMark) {
+        markModified(page, note)
         notes[page]?.remove(note)
         undoStack.removeAll { it.third === note }
+    }
+
+    /** 笔画/便签被修改（变换/改色/删除）时调用：从文档移除旧注释并标记需重新保存。 */
+    fun markModified(page: Int, stroke: Stroke) {
+        stroke.inkDict?.let { dict ->
+            runCatching {
+                (doc.getPage(page).cosObject.getItem(COSName.ANNOTS) as? COSArray)
+                    ?.remove(dict)
+            }
+            stroke.inkDict = null
+        }
+        stroke.saved = false
+    }
+
+    fun markModified(page: Int, note: NoteMark) {
+        note.noteDict?.let { dict ->
+            runCatching {
+                (doc.getPage(page).cosObject.getItem(COSName.ANNOTS) as? COSArray)
+                    ?.remove(dict)
+            }
+            note.noteDict = null
+        }
+        note.saved = false
     }
 
     fun undo(): Boolean {
@@ -126,6 +150,7 @@ class PdfSession(context: Context, val file: File) {
                 if (segDist(x, y, px, py, px, py) <= r) hit = true
             }
             if (hit) {
+                markModified(page, s)
                 it.remove()
                 undoStack.removeAll { u -> u.third === s }
                 removed = true
@@ -150,7 +175,8 @@ class PdfSession(context: Context, val file: File) {
                 for (annot in page.annotations) {
                     when {
                         annot.subtype == "Ink" -> {
-                            val stroke = Stroke(color = annotColor(annot), saved = true)
+                            val stroke = Stroke(color = annotColor(annot), saved = true,
+                                                inkDict = annot.cosObject)
                             val inkList = annot.cosObject.getItem(INK_LIST) as? COSArray
                                 ?: continue
                             for (pathObj in inkList) {
@@ -175,7 +201,8 @@ class PdfSession(context: Context, val file: File) {
                             notes.getOrPut(i) { mutableListOf() }.add(
                                 NoteMark((r.lowerLeftX + r.upperRightX) / 2,
                                          (r.lowerLeftY + r.upperRightY) / 2,
-                                         text, saved = true))
+                                         text, saved = true,
+                                         noteDict = annot.cosObject))
                         }
                     }
                 }
@@ -208,7 +235,9 @@ class PdfSession(context: Context, val file: File) {
                     val cosPage = page.cosObject
                     val annots = (cosPage.getItem(COSName.ANNOTS) as? COSArray)
                         ?: COSArray().also { cosPage.setItem(COSName.ANNOTS, it) }
-                    annots.add(toInkDict(s))
+                    val dict = toInkDict(s)
+                    annots.add(dict)
+                    s.inkDict = dict
                     s.saved = true
                 }
             }
@@ -216,7 +245,9 @@ class PdfSession(context: Context, val file: File) {
                 val page = doc.getPage(pageIndex)
                 for (n in list) {
                     if (n.saved) continue
-                    page.annotations.add(toTextAnnot(n))
+                    val annot = toTextAnnot(n)
+                    page.annotations.add(annot)
+                    n.noteDict = annot.cosObject
                     n.saved = true
                 }
             }

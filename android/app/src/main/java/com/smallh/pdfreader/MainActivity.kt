@@ -32,6 +32,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var searchInput: EditText
     private lateinit var searchCount: TextView
     private lateinit var colorBtn: Button
+    private lateinit var modeBtn: Button
+    private lateinit var selBar: LinearLayout
+    private lateinit var selBarScroll: HorizontalScrollView
+    private lateinit var selCountLabel: TextView
+    private lateinit var selColorBtn: Button
+    private var selColorIdx = 0
 
     private var session: PdfSession? = null
     private var pdfUri: Uri? = null
@@ -115,15 +121,44 @@ class MainActivity : AppCompatActivity() {
         root.addView(toolbarRow {
             for ((t, name) in listOf(
                 Tool.SELECT to "选择", Tool.PEN to "手写",
-                Tool.NOTE to "留言", Tool.ERASER to "橡皮")) {
+                Tool.NOTE to "留言", Tool.ERASER to "橡皮",
+                Tool.SELECT_STROKE to "框选")) {
                 val b = btn(name) { setTool(t) }
                 toolButtons[t] = b
                 addView(b)
             }
+            // 框选 / 圈选切换（框选工具下生效）
+            modeBtn = btn("模式：框") {
+                pageView.selModeRect = !pageView.selModeRect
+                modeBtn.text = if (pageView.selModeRect) "模式：框" else "模式：圈"
+            }
+            addView(modeBtn)
             colorBtn = btn("笔色：红") { cycleColor() }
             addView(colorBtn)
             addView(btn("撤销") { undo() })
         })
+
+        // 选中笔画操作条（有选区时显示）
+        selBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            selCountLabel = label("已选 0 笔")
+            addView(selCountLabel)
+            selColorBtn = btn("改色：红") { cycleSelectionColor() }
+            addView(selColorBtn)
+            addView(btn("放大") { pageView.scaleSelection(1.1f) })
+            addView(btn("缩小") { pageView.scaleSelection(1 / 1.1f) })
+            addView(btn("左旋") { pageView.rotateSelection(15f) })
+            addView(btn("右旋") { pageView.rotateSelection(-15f) })
+            addView(btn("删除") { pageView.deleteSelection() })
+            addView(btn("完成") { pageView.clearSelection() })
+        }
+        selBarScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            visibility = View.GONE
+            addView(selBar)
+        }
+        root.addView(selBarScroll)
 
         // 查找行（默认隐藏）
         searchRow = LinearLayout(this).apply {
@@ -151,6 +186,10 @@ class MainActivity : AppCompatActivity() {
             onNoteTap = { note -> editNoteDialog(note) }
             onNotePlace = { x, y -> placeNoteDialog(x, y) }
             onPageRendered = { updatePageLabel() }
+            onSelectionChanged = { count ->
+                selCountLabel.text = "已选 $count 笔"
+                selBarScroll.visibility = if (count > 0) View.VISIBLE else View.GONE
+            }
         }
         root.addView(pageView)
 
@@ -319,6 +358,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setTool(t: Tool) {
+        if (t != Tool.SELECT_STROKE) pageView.clearSelection()
         pageView.tool = t
         toolButtons.forEach { (k, b) -> b.alpha = if (k == t) 1f else 0.55f }
     }
@@ -328,6 +368,13 @@ class MainActivity : AppCompatActivity() {
         val (c, name) = colors[colorIdx]
         pageView.penColor = c
         colorBtn.text = "笔色：$name"
+    }
+
+    private fun cycleSelectionColor() {
+        selColorIdx = (selColorIdx + 1) % colors.size
+        val (c, name) = colors[selColorIdx]
+        selColorBtn.text = "改色：$name"
+        pageView.colorSelection(c)
     }
 
     private fun undo() {
