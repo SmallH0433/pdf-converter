@@ -52,7 +52,6 @@ class PageView(context: Context) : View(context) {
     private var drawingWithFinger = false
     private var erasingActive = false
     private var stylusDown = false      // 手写笔在屏（手掌排斥：忽略手指）
-    private var panPointer = -1         // 单指平移（选择/留言模式）
     private var twoFingerPan = false    // 双指平移/缩放中
     private var tapMoved = false
     private var lastPanX = 0f
@@ -266,7 +265,7 @@ class PageView(context: Context) : View(context) {
                     }
                     else -> { // 手指
                         when (tool) {
-                            // 画笔/橡皮：单指书写/擦除（双指才拖动页面）
+                            // 画笔/橡皮：单指书写/擦除
                             Tool.PEN -> {
                                 drawPointer = id
                                 drawingWithFinger = true
@@ -278,12 +277,9 @@ class PageView(context: Context) : View(context) {
                                 erasingActive = true
                                 eraseAt(event.x, event.y)
                             }
-                            // 选择/留言：单指拖动页面，轻点交互
-                            else -> {
-                                panPointer = id
-                                lastPanX = event.x
-                                lastPanY = event.y
-                            }
+                            // 选择/留言：单指只用于轻点交互，不拖动页面
+                            // （所有工具统一：单指=使用工具，双指=拖动/缩放页面）
+                            else -> {}
                         }
                     }
                 }
@@ -303,7 +299,6 @@ class PageView(context: Context) : View(context) {
                     drawPointer = -1
                     erasingActive = false
                 }
-                panPointer = -1
                 tapMoved = true
                 if (!stylusDown && event.pointerCount >= 2) { // 手写笔在屏时忽略手指（手掌排斥）
                     twoFingerPan = true
@@ -325,24 +320,11 @@ class PageView(context: Context) : View(context) {
                 }
                 for (i in 0 until event.pointerCount) {
                     val id = event.getPointerId(i)
-                    when (id) {
-                        drawPointer -> {
-                            if (erasingActive) {
-                                eraseAt(event.getX(i), event.getY(i))
-                            } else {
-                                extendStroke(event, i)
-                            }
-                        }
-                        panPointer -> {
-                            val dx = event.getX(i) - lastPanX
-                            val dy = event.getY(i) - lastPanY
-                            offsetX += dx
-                            offsetY += dy
-                            lastPanX = event.getX(i)
-                            lastPanY = event.getY(i)
-                            if (kotlin.math.abs(dx) + kotlin.math.abs(dy) > 4f) tapMoved = true
-                            clampOffsets()
-                            invalidate()
+                    if (id == drawPointer) {
+                        if (erasingActive) {
+                            eraseAt(event.getX(i), event.getY(i))
+                        } else {
+                            extendStroke(event, i)
                         }
                     }
                 }
@@ -350,14 +332,6 @@ class PageView(context: Context) : View(context) {
             MotionEvent.ACTION_POINTER_UP -> {
                 if (twoFingerPan && event.pointerCount - 1 < 2) {
                     twoFingerPan = false
-                    // 剩余一指：选择/留言模式恢复单指平移
-                    if (event.pointerCount - 1 == 1 &&
-                        (tool == Tool.SELECT || tool == Tool.NOTE)) {
-                        val idx = if (event.actionIndex == 0) 1 else 0
-                        panPointer = event.getPointerId(idx)
-                        lastPanX = event.getX(idx)
-                        lastPanY = event.getY(idx)
-                    }
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -370,12 +344,11 @@ class PageView(context: Context) : View(context) {
                 // 轻点（选择/留言模式、未拖动）：便签编辑 / 留言放置
                 val dt = event.eventTime - downTime
                 val dist = kotlin.math.hypot(event.x - downX, event.y - downY)
-                if (dt < 300 && dist < 24f && !tapMoved && !twoFingerPan &&
+                if (dt < 400 && dist < 36f && !tapMoved && !twoFingerPan &&
                     (tool == Tool.SELECT || tool == Tool.NOTE) &&
                     event.getToolType(event.actionIndex) != MotionEvent.TOOL_TYPE_STYLUS) {
                     handleTap(event.x, event.y)
                 }
-                panPointer = -1
                 twoFingerPan = false
                 stylusDown = false
             }
