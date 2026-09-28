@@ -449,7 +449,8 @@ class ReaderPage(QWidget):
         self.width_spin = SpinBox(bar2)
         self.width_spin.setRange(1, 12)
         self.width_spin.setValue(3)
-        self.width_spin.setFixedWidth(88)
+        # fluent SpinBox 右侧内嵌上下按钮约占 71px，宽度太小会把数字挤出可视区
+        self.width_spin.setFixedWidth(120)
         self.width_spin.valueChanged.connect(self._on_pen_style)
         row2.addWidget(self.width_spin)
 
