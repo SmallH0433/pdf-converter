@@ -1,4 +1,4 @@
-; PDF转换工具 安装程序脚本（NSIS 3）
+﻿; PDF转换工具 安装程序脚本（NSIS 3）
 ; 编译：_nsis\nsis-bundle\windows\makensis.exe setup.nsi
 
 !include "MUI2.nsh"
