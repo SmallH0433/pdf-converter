@@ -3,8 +3,10 @@
 
 !include "MUI2.nsh"
 
+!define APP_VERSION "1.2.0"
+
 Name "PDF转换工具"
-OutFile "installer\PDF转换工具_Setup.exe"
+OutFile "installer\PDF-Converter-Setup-${APP_VERSION}.exe"
 Unicode True
 ; 装到用户目录：无需管理员权限，且应用内一键安装 GPU 加速包需要对安装目录有写权限
 InstallDir "$LOCALAPPDATA\Programs\PDF转换工具"
@@ -36,7 +38,7 @@ Section "Install"
 
     ; 注册到 Windows「应用和功能」
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PDF转换工具" "DisplayName" "PDF转换工具"
-    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PDF转换工具" "DisplayVersion" "1.1.0"
+    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PDF转换工具" "DisplayVersion" "${APP_VERSION}"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PDF转换工具" "Publisher" "SmallH0433"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PDF转换工具" "DisplayIcon" "$INSTDIR\PDF转换工具.exe"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\PDF转换工具" "UninstallString" "$INSTDIR\卸载 PDF转换工具.exe"

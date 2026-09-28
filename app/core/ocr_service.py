@@ -1,6 +1,6 @@
 """扫描件 OCR：RapidOCR 中文模型，为无文字层的 PDF 添加可搜索的隐形文字层。
 
-OCR 组件（rapidocr_onnxruntime / onnxruntime 等）随主程序打包，开箱即用。
+OCR 组件（rapidocr / onnxruntime-gpu 等）随主程序打包，开箱即用。
 GPU 加速包可按需安装多个（NVIDIA CUDA 与 DirectML 互存），开始 OCR 任务时
 按当时的状态（插电/离电等）自动选择最佳后端：
 
@@ -47,7 +47,9 @@ PIP_INDEXES = ["https://pypi.tuna.tsinghua.edu.cn/simple", "https://pypi.org/sim
 _engine = None
 _active_backend: str | None = None
 _engine_lock = threading.Lock()
-_NOT_INSTALLED = "OCR 组件缺失（rapidocr_onnxruntime 未安装）"
+_dll_dir_handles: list = []
+_added_dll_dirs: set[str] = set()
+_NOT_INSTALLED = "OCR 组件缺失（rapidocr 未安装）"
 
 
 # ---- 组件目录与环境 ----
@@ -116,11 +118,15 @@ def _candidate_dll_dirs() -> list[str]:
 def _setup_cuda_dlls() -> None:
     """把 nvidia-* CUDA 运行库加入 DLL 搜索路径（Windows）。"""
     for d in _candidate_dll_dirs():
+        if d in _added_dll_dirs:
+            continue
         try:
-            os.add_dll_directory(d)
-        except OSError:
+            # 返回的句柄必须在进程生命周期内保持引用；否则 CPython 会立即撤销目录。
+            _dll_dir_handles.append(os.add_dll_directory(d))
+        except (AttributeError, OSError):
             pass
         os.environ['PATH'] = d + os.pathsep + os.environ.get('PATH', '')
+        _added_dll_dirs.add(d)
 
 
 # ---- 显卡、供电状态与后端检测 ----
@@ -217,12 +223,12 @@ def _pkg_exists(name: str) -> bool:
 
 def ocr_available() -> tuple[bool, str]:
     """检查 OCR 组件是否就绪，返回 (是否可用, 不可用原因)。纯文件检测。"""
-    if _pkg_exists('rapidocr_onnxruntime') and _pkg_exists('cv2') and _pkg_exists('numpy'):
+    if _pkg_exists('rapidocr') and _pkg_exists('cv2') and _pkg_exists('numpy'):
         return True, ""
     return False, _NOT_INSTALLED
 
 
-# ---- 各后端可用性（纯文件检测，不提前 import onnxruntime，避免提前锁定后端） ----
+# ---- 各后端可用性 ----
 
 def _ort_cuda_capable() -> bool:
     """内置的 onnxruntime 是否含 CUDA provider（按文件判断）。"""
@@ -235,23 +241,47 @@ def _ort_cuda_capable() -> bool:
     return any(os.path.exists(os.path.join(r, rel)) for r in roots)
 
 
-def cuda_available() -> bool:
-    """CUDA 加速是否可用（onnxruntime-gpu 内置 + cuDNN 运行库已安装）。"""
+def _cuda_installed() -> bool:
+    """CUDA provider 与 cuDNN 文件是否已安装（不代表 provider 一定能加载）。"""
     return (_ort_cuda_capable()
             and any(os.path.exists(os.path.join(d, 'cudnn64_9.dll'))
                     for d in _candidate_dll_dirs()))
 
 
-def directml_available() -> bool:
-    """DirectML 加速是否可用（Windows 10+，已安装 DirectML 加速包）。"""
+def _directml_installed() -> bool:
+    """DirectML 加速包是否已安装（不提前导入 onnxruntime）。"""
     if platform.system() != 'Windows':
         return False
     try:
-        if int(platform.release().split('.')[0]) < 10:
+        build = int(platform.version().split('.')[-1])
+        if build < 18362:  # DirectML 最低要求：Windows 10 1903
             return False
-    except ValueError:
-        pass
+    except (TypeError, ValueError):
+        return False
     return os.path.isdir(os.path.join(dml_modules_dir(), 'onnxruntime'))
+
+
+def _loaded_providers() -> list[str]:
+    """返回当前进程真正加载成功的 ONNX Runtime providers。"""
+    try:
+        import onnxruntime as ort
+        return ort.get_available_providers()
+    except Exception:
+        return []
+
+
+def cuda_available() -> bool:
+    """CUDA 是否可用；ORT 已加载时以真实 provider 为准。"""
+    if 'onnxruntime' in sys.modules:
+        return 'CUDAExecutionProvider' in _loaded_providers()
+    return _cuda_installed()
+
+
+def directml_available() -> bool:
+    """DirectML 是否可用；ORT 已加载时以真实 provider 为准。"""
+    if 'onnxruntime' in sys.modules:
+        return 'DmlExecutionProvider' in _loaded_providers()
+    return _directml_installed()
 
 
 def coreml_available() -> bool:
@@ -268,14 +298,10 @@ def coreml_available() -> bool:
 
 def _backend_from_loaded_ort() -> str:
     """onnxruntime 已被加载时，基于已加载的 flavor 选最优后端。"""
-    try:
-        import onnxruntime as ort
-        provs = ort.get_available_providers()
-    except Exception:
-        return 'cpu'
+    provs = _loaded_providers()
     if 'DmlExecutionProvider' in provs:
         return 'directml'
-    if 'CUDAExecutionProvider' in provs and cuda_available():
+    if 'CUDAExecutionProvider' in provs:
         return 'cuda'
     if 'CoreMLExecutionProvider' in provs:
         return 'coreml'
@@ -288,18 +314,33 @@ def best_backend() -> str:
     插电时优先 CUDA（独显性能最高）；离电且装有 DirectML 时改走 DirectML——
     DirectML 默认使用当前显示输出 GPU，独显直连用独显、混合输出用核显，更省电。
     """
-    if _engine is not None or 'onnxruntime' in sys.modules:
+    if _engine is not None:
         return _backend_from_loaded_ort()  # onnxruntime flavor 已锁定
-    cuda, dml = cuda_available(), directml_available()
+    if 'onnxruntime' in sys.modules:
+        # 其他模块可能先导入 ORT；CUDA provider 创建会话前仍需注册运行库目录。
+        if _cuda_installed():
+            _setup_cuda_dlls()
+        return _backend_from_loaded_ort()
+    cuda, dml = _cuda_installed(), _directml_installed()
     if cuda and dml:
-        return 'cuda' if power_state() != 'battery' else 'directml'
-    if cuda:
-        return 'cuda'
-    if dml:
-        return 'directml'
-    if coreml_available():
-        return 'coreml'
-    return 'cpu'
+        preferred = 'cuda' if power_state() != 'battery' else 'directml'
+    elif cuda:
+        preferred = 'cuda'
+    elif dml:
+        preferred = 'directml'
+    elif platform.system() == 'Darwin':
+        preferred = 'coreml'
+    else:
+        preferred = 'cpu'
+
+    # 文件存在不等于 provider 能加载。这里在界面展示后端前完成一次真实加载，
+    # 避免 CPU 版覆盖 GPU 版或驱动/DLL 缺失时仍误报为 CUDA/DirectML。
+    if preferred == 'directml':
+        _use_modules_dir(dml_modules_dir())
+    if preferred == 'cuda':
+        _setup_cuda_dlls()
+    _loaded_providers()
+    return _backend_from_loaded_ort()
 
 
 _BACKEND_NAMES = {
@@ -390,9 +431,9 @@ def accel_offers() -> list[tuple[str, str]]:
         return offers
     if gpu_kind() == 'hisilicon':
         return offers
-    if has_nvidia_gpu() and not cuda_available():
+    if has_nvidia_gpu() and not _cuda_installed():
         offers.append(('cuda', '安装 NVIDIA CUDA 加速（约 1.1GB）'))
-    if gpu_names() and not directml_available():
+    if gpu_names() and not _directml_installed():
         # 任何 DX12 显卡（含 NVIDIA 双显本）都可装 DirectML：离电/混合输出时使用
         offers.append(('directml', '安装 DirectML 加速（AMD/Intel/高通 · 约 250MB）'))
     return offers
@@ -415,36 +456,21 @@ def install_gpu(kind: str, log_cb=None) -> str:
     for index in PIP_INDEXES:
         if log_cb:
             log_cb(f"使用源 {index} 下载安装…")
+        loaded_before_install = 'onnxruntime' in sys.modules
         if _run_pip(base_args + ['-i', index] + packages, log_cb) == 0:
             importlib.invalidate_caches()
-            # onnxruntime 已在本进程加载时，新装的后端要等重启后才能生效
-            restart = "（重启应用后生效）" if 'onnxruntime' in sys.modules else ""
+            # onnxruntime 已在本进程加载时无法更换 flavor，新后端需重启验证。
+            if loaded_before_install:
+                return "加速安装完成（重启应用后生效）"
             if best_backend() == kind:
-                return f"加速安装完成{restart}"
+                return "加速安装完成"
             if kind == 'cuda':
                 return "安装完成，但未检测到可用的 CUDA（需要较新驱动），将继续使用现有后端"
-            return f"安装完成，重启应用后可在离电时自动启用 DirectML{restart or '（重启应用后生效）'}"
+            return "安装完成，但未检测到可用的 DirectML，将继续使用现有后端"
     raise RuntimeError("下载安装失败，请检查网络连接后重试")
 
 
 # ---- OCR 引擎与页面处理 ----
-
-def _enable_coreml_for_rapidocr() -> None:
-    """RapidOCR 未内置 CoreML 选项，给 OrtInferSession 打补丁插入 CoreML EP。
-
-    仅在 macOS 且 onnxruntime 自带 CoreML EP 时调用；任何异常都退回原行为。
-    """
-    from rapidocr_onnxruntime.utils import infer_engine as ie
-    orig = ie.OrtInferSession._get_ep_list
-
-    def patched(self):
-        eps = orig(self)
-        if 'CoreMLExecutionProvider' in self.had_providers:
-            eps.insert(0, ('CoreMLExecutionProvider', {}))
-        return eps
-
-    ie.OrtInferSession._get_ep_list = patched
-
 
 def get_engine():
     """RapidOCR 引擎单例。首次调用（开始任务时）按当时状况选择后端并加载模型。"""
@@ -455,22 +481,26 @@ def get_engine():
             if not ok:
                 raise RuntimeError(reason)
             backend = best_backend()
-            if backend == 'directml':
-                # DirectML 版 onnxruntime 在独立目录，加载前遮蔽内置的 CUDA 版
-                _use_modules_dir(dml_modules_dir())
-            _setup_cuda_dlls()
-            from rapidocr_onnxruntime import RapidOCR
-            if backend == 'coreml':
-                try:
-                    _enable_coreml_for_rapidocr()
-                except Exception:
-                    pass  # 补丁失败则用 CPU，不影响可用性
-            _engine = RapidOCR(
-                det_use_cuda=backend == 'cuda', cls_use_cuda=backend == 'cuda',
-                rec_use_cuda=backend == 'cuda',
-                det_use_dml=backend == 'directml', cls_use_dml=backend == 'directml',
-                rec_use_dml=backend == 'directml')
-            _active_backend = backend
+            from rapidocr import RapidOCR
+            provider_key = {
+                'cuda': 'EngineConfig.onnxruntime.use_cuda',
+                'directml': 'EngineConfig.onnxruntime.use_dml',
+                'coreml': 'EngineConfig.onnxruntime.use_coreml',
+            }.get(backend)
+            params = {provider_key: True} if provider_key else None
+            _engine = RapidOCR(params=params)
+            # get_available_providers() 仅表示编译进包，依赖 DLL 缺失时创建会话仍会
+            # 回退 CPU；以实际会话采用的首选 provider 作为最终后端。
+            try:
+                session = _engine.text_det.session.session
+                first_provider = session.get_providers()[0]
+            except (AttributeError, IndexError):
+                first_provider = 'CPUExecutionProvider'
+            _active_backend = {
+                'CUDAExecutionProvider': 'cuda',
+                'DmlExecutionProvider': 'directml',
+                'CoreMLExecutionProvider': 'coreml',
+            }.get(first_provider, 'cpu')
     return _engine
 
 
@@ -505,13 +535,13 @@ def ocr_page(doc: fitz.Document, page: fitz.Page, include_annots: bool = False) 
     """
     engine = get_engine()
     arr, iw, ih = page_image_array(doc, page, include_annots)
-    result, _ = engine(arr)
+    result = engine(arr)
     lines: list[dict] = []
-    if not result:
+    if result.boxes is None or result.txts is None or result.scores is None:
         return lines
     sx = page.rect.width / iw
     sy = page.rect.height / ih
-    for box, text, _score in result:
+    for box, text, _score in zip(result.boxes, result.txts, result.scores):
         text = text.strip()
         if not text:
             continue

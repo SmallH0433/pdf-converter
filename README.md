@@ -15,11 +15,21 @@
 
 ## 安装
 
-从 [Releases](https://github.com/SmallH0433/pdf-converter/releases) 下载最新的 `PDF-Converter-Setup-*.exe`，双击安装即可：
+从 [GitHub Releases](https://github.com/SmallH0433/pdf-converter/releases) 下载最新安装包，双击安装即可。当前稳定版为 **1.2**：
+
+- [下载 PDF-Converter-Setup-1.2.0.exe](https://github.com/SmallH0433/pdf-converter/releases/download/v1.2.0/PDF-Converter-Setup-1.2.0.exe)
 
 - 无需 Python 环境，无需管理员权限（安装到用户目录）
 - 支持 Windows 10 / 11（64 位）；Windows 10 建议 21H2 及以上
 - 自带卸载程序，注册到 Windows「应用和功能」
+
+### 1.2 更新内容
+
+- OCR 引擎升级至 RapidOCR 3.9.2（PP-OCRv6 中文模型）
+- 修复 CPU/GPU 版 ONNX Runtime 混装导致 CUDA 被覆盖的问题
+- 修复 CUDA 运行库目录过早失效、界面显示 GPU 但实际回退 CPU 的问题
+- 根据 OCR 会话实际加载的 Provider 显示 CUDA、DirectML、CoreML 或 CPU
+- 保持 Windows 10 64 位、AMD/Intel/高通 DirectML 及 CPU 回退支持
 
 ## GPU 加速（可选）
 
@@ -65,7 +75,7 @@ python -m venv .venv
 # 生成 dist/PDF转换工具/（文件夹版，OCR 组件内置）
 .venv/Scripts/python.exe -m PyInstaller PDF转换工具.spec
 
-# 生成安装程序 installer/PDF转换工具_Setup.exe（需 NSIS 3.12，置于 _nsis/）
+# 生成版本化安装程序 installer/PDF-Converter-Setup-1.2.0.exe（需 NSIS 3.12，置于 _nsis/）
 NSISDIR="$(pwd -W)/_nsis/nsis-bundle/windows" _nsis/nsis-bundle/windows/makensis.exe setup.nsi
 ```
 
@@ -79,5 +89,5 @@ NSISDIR="$(pwd -W)/_nsis/nsis-bundle/windows" _nsis/nsis-bundle/windows/makensis
 
 - UI：PySide6 + PySide6-Fluent-Widgets
 - PDF 引擎：PyMuPDF
-- OCR：RapidOCR（PP-OCRv4 中文模型）+ ONNX Runtime（CUDA / DirectML / CoreML 多后端）
+- OCR：RapidOCR（PP-OCRv6 中文模型）+ ONNX Runtime（CUDA / DirectML / CoreML 多后端）
 - 打包：PyInstaller（onedir）+ NSIS

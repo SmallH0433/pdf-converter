@@ -14,7 +14,7 @@ hiddenimports += collect_submodules('pymupdf')
 tmp_ret = collect_all('qfluentwidgets')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 # OCR 组件（含模型文件、onnxruntime 的 CUDA provider DLL）
-tmp_ret = collect_all('rapidocr_onnxruntime')
+tmp_ret = collect_all('rapidocr')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('onnxruntime')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
