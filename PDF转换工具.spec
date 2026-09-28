@@ -6,6 +6,21 @@ from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.utils.hooks import collect_all
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import copy_metadata
+from importlib.metadata import PackageNotFoundError, version
+
+# onnxruntime 的 CPU/CUDA/DirectML 发行版会写入同一个包目录。混装时 pip 元数据
+# 看似正常，实际 DLL 可能来自不同版本，最终只剩 CPU Provider 或在目标机加载失败。
+# 构建阶段直接阻止污染环境进入安装包。
+conflicting_ort = []
+for package in ('onnxruntime', 'onnxruntime-directml', 'rapidocr-onnxruntime'):
+    try:
+        conflicting_ort.append(f'{package}=={version(package)}')
+    except PackageNotFoundError:
+        pass
+if conflicting_ort:
+    raise RuntimeError(
+        '检测到与 onnxruntime-gpu 冲突的发行版：' + ', '.join(conflicting_ort)
+        + '。请先卸载冲突包并强制重装 requirements.txt 后再打包。')
 
 datas = []
 binaries = []

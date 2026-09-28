@@ -118,15 +118,25 @@ def _candidate_dll_dirs() -> list[str]:
 def _setup_cuda_dlls() -> None:
     """把 nvidia-* CUDA 运行库加入 DLL 搜索路径（Windows）。"""
     for d in _candidate_dll_dirs():
-        if d in _added_dll_dirs:
-            continue
-        try:
-            # 返回的句柄必须在进程生命周期内保持引用；否则 CPython 会立即撤销目录。
-            _dll_dir_handles.append(os.add_dll_directory(d))
-        except (AttributeError, OSError):
-            pass
-        os.environ['PATH'] = d + os.pathsep + os.environ.get('PATH', '')
-        _added_dll_dirs.add(d)
+        _add_dll_dir(d)
+
+
+def _add_dll_dir(d: str) -> None:
+    """把目录加入 Windows DLL 搜索路径，并保留 add_dll_directory 句柄。"""
+    if not os.path.isdir(d) or d in _added_dll_dirs:
+        return
+    try:
+        # 返回的句柄必须在进程生命周期内保持引用；否则 CPython 会立即撤销目录。
+        _dll_dir_handles.append(os.add_dll_directory(d))
+    except (AttributeError, OSError):
+        pass
+    os.environ['PATH'] = d + os.pathsep + os.environ.get('PATH', '')
+    _added_dll_dirs.add(d)
+
+
+def _setup_dml_dlls() -> None:
+    """确保外置 DirectML.dll/onnxruntime.dll 在 frozen 应用中可被找到。"""
+    _add_dll_dir(os.path.join(dml_modules_dir(), 'onnxruntime', 'capi'))
 
 
 # ---- 显卡、供电状态与后端检测 ----
@@ -209,6 +219,28 @@ def power_state() -> str:
         return 'unknown'
 
 
+def _windows_build_number() -> int:
+    """返回真实 Windows build；获取失败时返回 0。
+
+    部分 Windows 10 机器上的兼容层会让 ``platform.version()`` 返回旧版本，
+    从而错误地隐藏 DirectML。优先使用 CPython 的 Windows 版本接口。
+    """
+    if platform.system() != 'Windows':
+        return 0
+    try:
+        return int(sys.getwindowsversion().build)
+    except (AttributeError, TypeError, ValueError):
+        try:
+            return int(platform.version().split('.')[-1])
+        except (TypeError, ValueError):
+            return 0
+
+
+def _directml_os_supported() -> bool:
+    """DirectML 需要 Windows 10 1903（build 18362）或更高版本。"""
+    return platform.system() == 'Windows' and _windows_build_number() >= 18362
+
+
 # ---- OCR 组件可用性 ----
 
 def _pkg_exists(name: str) -> bool:
@@ -250,13 +282,7 @@ def _cuda_installed() -> bool:
 
 def _directml_installed() -> bool:
     """DirectML 加速包是否已安装（不提前导入 onnxruntime）。"""
-    if platform.system() != 'Windows':
-        return False
-    try:
-        build = int(platform.version().split('.')[-1])
-        if build < 18362:  # DirectML 最低要求：Windows 10 1903
-            return False
-    except (TypeError, ValueError):
+    if not _directml_os_supported():
         return False
     return os.path.isdir(os.path.join(dml_modules_dir(), 'onnxruntime'))
 
@@ -308,6 +334,26 @@ def _backend_from_loaded_ort() -> str:
     return 'cpu'
 
 
+def _planned_backend() -> str:
+    """只按文件、硬件与供电状态选择后端，不导入 onnxruntime。
+
+    Intel/AMD/高通机器即使残留 CUDA 文件也应优先 DirectML；否则一旦先导入
+    CUDA flavor，当前进程便无法再切换到 DirectML flavor。
+    """
+    cuda, dml = _cuda_installed(), _directml_installed()
+    if dml and not has_nvidia_gpu():
+        return 'directml'
+    if cuda and dml:
+        return 'cuda' if power_state() != 'battery' else 'directml'
+    if cuda:
+        return 'cuda'
+    if dml:
+        return 'directml'
+    if platform.system() == 'Darwin':
+        return 'coreml'
+    return 'cpu'
+
+
 def best_backend() -> str:
     """开始任务时按当前状况选最优后端：cuda / directml / coreml / cpu。
 
@@ -321,21 +367,12 @@ def best_backend() -> str:
         if _cuda_installed():
             _setup_cuda_dlls()
         return _backend_from_loaded_ort()
-    cuda, dml = _cuda_installed(), _directml_installed()
-    if cuda and dml:
-        preferred = 'cuda' if power_state() != 'battery' else 'directml'
-    elif cuda:
-        preferred = 'cuda'
-    elif dml:
-        preferred = 'directml'
-    elif platform.system() == 'Darwin':
-        preferred = 'coreml'
-    else:
-        preferred = 'cpu'
+    preferred = _planned_backend()
 
-    # 文件存在不等于 provider 能加载。这里在界面展示后端前完成一次真实加载，
-    # 避免 CPU 版覆盖 GPU 版或驱动/DLL 缺失时仍误报为 CUDA/DirectML。
+    # 文件存在不等于 provider 能加载。仅在安装完成或首次创建引擎时真实导入，
+    # 避免界面刷新过早锁定错误 flavor，同时仍以实际 Provider 校验结果为准。
     if preferred == 'directml':
+        _setup_dml_dlls()
         _use_modules_dir(dml_modules_dir())
     if preferred == 'cuda':
         _setup_cuda_dlls()
@@ -352,8 +389,18 @@ _BACKEND_NAMES = {
 
 
 def backend_name() -> str:
-    """OCR 推理后端描述，用于界面展示。"""
-    return _BACKEND_NAMES[_active_backend or best_backend()]
+    """OCR 推理后端描述，用于界面展示。
+
+    引擎创建前只展示计划后端，不能为刷新界面而导入 ORT。否则用户在界面中
+    安装 DirectML 前，内置 CUDA/CPU flavor 就会被永久锁定到当前进程。
+    """
+    if _active_backend:
+        return _BACKEND_NAMES[_active_backend]
+    if 'onnxruntime' in sys.modules:
+        return _BACKEND_NAMES[_backend_from_loaded_ort()]
+    planned = _planned_backend()
+    suffix = '（首次识别时验证）' if planned != 'cpu' else ''
+    return _BACKEND_NAMES[planned] + suffix
 
 
 # ---- 一键安装 ----
@@ -433,8 +480,9 @@ def accel_offers() -> list[tuple[str, str]]:
         return offers
     if has_nvidia_gpu() and not _cuda_installed():
         offers.append(('cuda', '安装 NVIDIA CUDA 加速（约 1.1GB）'))
-    if gpu_names() and not _directml_installed():
-        # 任何 DX12 显卡（含 NVIDIA 双显本）都可装 DirectML：离电/混合输出时使用
+    if _directml_os_supported() and not _directml_installed():
+        # WMI 在部分 Win10 精简版/受限账户中会查询失败；不能因此隐藏 DirectML。
+        # 任何 DX12 显卡（含 NVIDIA 双显本）都可安装，最终由实际 Provider 验证。
         offers.append(('directml', '安装 DirectML 加速（AMD/Intel/高通 · 约 250MB）'))
     return offers
 
@@ -491,11 +539,18 @@ def get_engine():
             _engine = RapidOCR(params=params)
             # get_available_providers() 仅表示编译进包，依赖 DLL 缺失时创建会话仍会
             # 回退 CPU；以实际会话采用的首选 provider 作为最终后端。
-            try:
-                session = _engine.text_det.session.session
-                first_provider = session.get_providers()[0]
-            except (AttributeError, IndexError):
-                first_provider = 'CPUExecutionProvider'
+            first_providers = []
+            for part_name in ('text_det', 'text_cls', 'text_rec'):
+                try:
+                    part = getattr(_engine, part_name)
+                    first_providers.append(part.session.session.get_providers()[0])
+                except (AttributeError, IndexError):
+                    continue
+            # 三个实际会话必须一致使用同一 GPU Provider 才报告 GPU，避免仅检测
+            # 文本检测模型而掩盖分类/识别模型已经回退 CPU 的情况。
+            first_provider = (first_providers[0] if first_providers
+                              and len(set(first_providers)) == 1
+                              else 'CPUExecutionProvider')
             _active_backend = {
                 'CUDAExecutionProvider': 'cuda',
                 'DmlExecutionProvider': 'directml',

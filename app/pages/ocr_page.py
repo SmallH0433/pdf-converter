@@ -207,6 +207,7 @@ class OcrPage(QWidget):
 
     def _on_done(self, path: str):
         self._finish_ui()
+        self._refresh_engine_ui()  # 首次识别后显示实际会话采用的 Provider
         self.status_label.setText(f"已完成：{path}")
         InfoBar.success("OCR 完成", f"已导出：{path}", parent=self,
                         position=InfoBarPosition.TOP, duration=5000)

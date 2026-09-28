@@ -15,13 +15,21 @@
 
 ## 安装
 
-从 [GitHub Releases](https://github.com/SmallH0433/pdf-converter/releases) 下载最新安装包，双击安装即可。当前稳定版为 **1.2**：
+从 [GitHub Releases](https://github.com/SmallH0433/pdf-converter/releases) 下载最新安装包，双击安装即可。当前稳定版为 **1.2.1**：
 
-- [下载 PDF-Converter-Setup-1.2.0.exe](https://github.com/SmallH0433/pdf-converter/releases/download/v1.2.0/PDF-Converter-Setup-1.2.0.exe)
+- [下载 PDF-Converter-Setup-1.2.1.exe](https://github.com/SmallH0433/pdf-converter/releases/download/v1.2.1/PDF-Converter-Setup-1.2.1.exe)
 
 - 无需 Python 环境，无需管理员权限（安装到用户目录）
 - 支持 Windows 10 / 11（64 位）；Windows 10 建议 21H2 及以上
 - 自带卸载程序，注册到 Windows「应用和功能」
+
+### 1.2.1 更新内容
+
+- 修复 Intel 集显机器无法启用 DirectML、错误回退 CPU 的问题
+- WMI 无法读取显卡名称时仍提供 DirectML 安装入口
+- 避免界面刷新过早加载并锁定错误的 ONNX Runtime 后端
+- Intel/AMD/高通机器优先使用 DirectML，并校验全部三个 OCR 模型会话
+- 打包阶段阻止 CPU/CUDA/DirectML 版 ONNX Runtime 混装
 
 ### 1.2 更新内容
 
@@ -42,6 +50,8 @@ OCR 默认使用 CPU 即可用；在「PDF OCR」页面可一键安装 GPU 加�
 | 苹果 Mac（源码运行） | CoreML | 无需安装，onnxruntime 自带 |
 
 - CUDA 与 DirectML 加速包**可以共存**（双显笔记本适用），开始 OCR 任务时按当时状态自动选择：插电优先 CUDA（独显性能最高），离电走 DirectML（默认使用当前显示输出 GPU：独显直连用独显、混合输出用核显），更省电
+- Intel/AMD/高通机器会优先选择 DirectML；即使 WMI 无法读取显卡名称，Windows 10 1903 及以上仍会显示 DirectML 安装入口
+- 状态中的“首次识别时验证”表示尚未创建推理会话；首次 OCR 后会按三个模型会话实际使用的 Provider 显示 GPU 或 CPU
 - 加速包下载自 PyPI（默认清华镜像源），安装后离线可用
 - 海思（麒麟/昇腾/马良）无 ONNX Runtime 桌面后端，程序会检测并明确提示；华为 Windows 笔记本的 Intel/AMD 显卡已由 DirectML 覆盖
 
@@ -75,7 +85,7 @@ python -m venv .venv
 # 生成 dist/PDF转换工具/（文件夹版，OCR 组件内置）
 .venv/Scripts/python.exe -m PyInstaller PDF转换工具.spec
 
-# 生成版本化安装程序 installer/PDF-Converter-Setup-1.2.0.exe（需 NSIS 3.12，置于 _nsis/）
+# 生成版本化安装程序 installer/PDF-Converter-Setup-1.2.1.exe（需 NSIS 3.12，置于 _nsis/）
 NSISDIR="$(pwd -W)/_nsis/nsis-bundle/windows" _nsis/nsis-bundle/windows/makensis.exe setup.nsi
 ```
 
