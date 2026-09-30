@@ -71,6 +71,19 @@ class PageView(context: Context) : View(context) {
     var onSelectionChanged: ((Int) -> Unit)? = null
     val hasSelection: Boolean get() = selectedStrokes.isNotEmpty()
 
+    // ---- 选区手柄：四角缩放 + 顶部旋转 ----
+    private enum class SelHandle { NONE, TL, TR, BL, BR, ROTATE }
+    private var activeHandle = SelHandle.NONE
+    private var handleAnchorX = 0f      // PDF 坐标：缩放=对角锚点，旋转=包围盒中心
+    private var handleAnchorY = 0f
+    private var handleLastDist = 0f
+    private var handleLastAngle = 0.0
+    private var rotateIcon: Bitmap? = null
+
+    private val handleRadiusPx get() = 11f * resources.displayMetrics.density
+    private val handleTouchPx get() = 26f * resources.displayMetrics.density
+    private val rotateOffsetPx get() = 34f * resources.displayMetrics.density
+
     private val highlights = mutableListOf<Pair<RectF, Boolean>>() // top-down 坐标, 是否当前条
 
     private val renderRunnable = Runnable { doRender() }
@@ -125,6 +138,12 @@ class PageView(context: Context) : View(context) {
         invalidate()
     }
 
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        // 宽度变化（转屏/分屏，此时尺寸已是新值）：重新适应宽度；首次布局由 showPage 处理
+        if (oldw > 0 && w != oldw && session != null) fitToWidth()
+    }
+
     private fun totalScale() = fitScale * zoom
 
     private fun scheduleRender() {
@@ -168,12 +187,13 @@ class PageView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        canvas.drawColor(Color.rgb(96, 96, 96))
+        // 画布底色：HiUI gray-300，白页在其上有清晰对比
+        canvas.drawColor(Color.rgb(230, 232, 235))
         val s = session
         val bmp = bitmap
         if (s == null || bmp == null) {
             val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.LTGRAY
+                color = Color.rgb(145, 149, 158) // HiUI gray-600
                 textSize = 42f
                 textAlign = Paint.Align.CENTER
             }
@@ -218,6 +238,55 @@ class PageView(context: Context) : View(context) {
         }
         drawSelectionOverlay(canvas, s.pageHeight(pageIndex))
         canvas.restore()
+        drawSelectionHandles(canvas)
+    }
+
+    /** 选区手柄：四角缩放圆点 + 顶部旋转圆钮（视图坐标绘制，大小不随缩放变化）。 */
+    private fun drawSelectionHandles(canvas: Canvas) {
+        if (!hasSelection) return
+        val r = selViewRect() ?: return
+        val density = resources.displayMetrics.density
+        val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = Color.WHITE
+        }
+        val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 2f * density
+            color = Color.rgb(38, 96, 255) // HiUI brandblue-500
+        }
+        // 顶部旋转手柄：连接线 + 圆钮 + 图标
+        val (rcx, rcy) = rotateHandleCenter(r)
+        canvas.drawLine(r.centerX(), r.top, rcx, rcy + handleRadiusPx, stroke)
+        canvas.drawCircle(rcx, rcy, handleRadiusPx, fill)
+        canvas.drawCircle(rcx, rcy, handleRadiusPx, stroke)
+        rotateIconBitmap()?.let { icon ->
+            val half = handleRadiusPx * 0.75f
+            canvas.drawBitmap(icon, null,
+                RectF(rcx - half, rcy - half, rcx + half, rcy + half), null)
+        }
+        // 四角缩放手柄
+        canvas.drawCircle(r.left, r.top, handleRadiusPx, fill)
+        canvas.drawCircle(r.left, r.top, handleRadiusPx, stroke)
+        canvas.drawCircle(r.right, r.top, handleRadiusPx, fill)
+        canvas.drawCircle(r.right, r.top, handleRadiusPx, stroke)
+        canvas.drawCircle(r.left, r.bottom, handleRadiusPx, fill)
+        canvas.drawCircle(r.left, r.bottom, handleRadiusPx, stroke)
+        canvas.drawCircle(r.right, r.bottom, handleRadiusPx, fill)
+        canvas.drawCircle(r.right, r.bottom, handleRadiusPx, stroke)
+    }
+
+    private fun rotateIconBitmap(): Bitmap? {
+        rotateIcon?.let { return it }
+        val d = androidx.appcompat.content.res.AppCompatResources.getDrawable(
+            context, R.drawable.ic_rotate) ?: return null
+        val size = (48 * resources.displayMetrics.density).toInt()
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        d.setBounds(0, 0, size, size)
+        d.draw(c)
+        rotateIcon = bmp
+        return bmp
     }
 
     // ---- 笔画选择（框选/圈选） ----
@@ -225,7 +294,7 @@ class PageView(context: Context) : View(context) {
     private fun drawSelectionOverlay(canvas: Canvas, pageH: Float) {
         val dash = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
-            color = Color.rgb(30, 100, 255)
+            color = Color.rgb(38, 96, 255) // HiUI brandblue-500
             strokeWidth = 1.5f
             pathEffect = android.graphics.DashPathEffect(floatArrayOf(8f, 6f), 0f)
         }
@@ -254,6 +323,12 @@ class PageView(context: Context) : View(context) {
 
     private fun beginSelectOrMove(vx: Float, vy: Float) {
         val (px, py) = viewToPdf(vx, vy)
+        // 手柄优先（角手柄骑跨在包围盒边缘，须先于盒内拖动判断）
+        val h = hitHandle(vx, vy)
+        if (h != SelHandle.NONE) {
+            beginHandleDrag(h, px, py)
+            return
+        }
         val b = selBBox
         if (b != null && px >= b.left && px <= b.right && py >= b.top && py <= b.bottom) {
             movingSel = true   // 点在包围盒内：拖动选区
@@ -263,6 +338,70 @@ class PageView(context: Context) : View(context) {
             clearSelection()
             selPath.add(vx to vy)
         }
+    }
+
+    /** 选区包围盒的视图坐标矩形（PDF y 向上 → 视图 y 向下）。 */
+    private fun selViewRect(): RectF? {
+        val s = session ?: return null
+        val b = selBBox ?: return null
+        val scale = totalScale()
+        val pageH = s.pageHeight(pageIndex)
+        return RectF(offsetX + b.left * scale, offsetY + (pageH - b.bottom) * scale,
+                     offsetX + b.right * scale, offsetY + (pageH - b.top) * scale)
+    }
+
+    private fun rotateHandleCenter(r: RectF) = r.centerX() to (r.top - rotateOffsetPx)
+
+    private fun hitHandle(vx: Float, vy: Float): SelHandle {
+        val r = selViewRect() ?: return SelHandle.NONE
+        val (rcx, rcy) = rotateHandleCenter(r)
+        if (kotlin.math.hypot(vx - rcx, vy - rcy) <= handleTouchPx) return SelHandle.ROTATE
+        val corners = arrayOf(
+            SelHandle.TL to (r.left to r.top), SelHandle.TR to (r.right to r.top),
+            SelHandle.BL to (r.left to r.bottom), SelHandle.BR to (r.right to r.bottom))
+        for ((h, pos) in corners) {
+            if (kotlin.math.hypot(vx - pos.first, vy - pos.second) <= handleTouchPx) return h
+        }
+        return SelHandle.NONE
+    }
+
+    private fun beginHandleDrag(h: SelHandle, px: Float, py: Float) {
+        val b = selBBox ?: return
+        activeHandle = h
+        if (h == SelHandle.ROTATE) {
+            handleAnchorX = b.centerX()
+            handleAnchorY = b.centerY()
+            handleLastAngle = kotlin.math.atan2(py - handleAnchorY, px - handleAnchorX).toDouble()
+        } else {
+            // 视图角 ↔ PDF 角：视图顶部 = PDF 大 y（b.bottom）；锚点取对角
+            handleAnchorX = if (h == SelHandle.TL || h == SelHandle.BL) b.right else b.left
+            handleAnchorY = if (h == SelHandle.TL || h == SelHandle.TR) b.top else b.bottom
+            handleLastDist = kotlin.math.hypot(px - handleAnchorX, py - handleAnchorY)
+                .coerceAtLeast(1f)
+        }
+    }
+
+    private fun dragHandle(vx: Float, vy: Float) {
+        val (px, py) = viewToPdf(vx, vy)
+        if (activeHandle == SelHandle.ROTATE) {
+            val ang = kotlin.math.atan2(py - handleAnchorY, px - handleAnchorX).toDouble()
+            val delta = ang - handleLastAngle
+            handleLastAngle = ang
+            if (delta != 0.0) rotateSelectionRad(delta.toFloat())
+        } else {
+            val dist = kotlin.math.hypot(px - handleAnchorX, py - handleAnchorY)
+            val factor = (dist / handleLastDist).coerceIn(0.05f, 20f)
+            handleLastDist = dist
+            if (factor != 1f) scaleSelectionFrom(handleAnchorX, handleAnchorY, factor)
+        }
+    }
+
+    /** 手柄拖动结束：统一把改动写入文档模型（拖动过程中不置脏，避免频繁回调）。 */
+    private fun finishHandleDrag() {
+        activeHandle = SelHandle.NONE
+        val s = session ?: return
+        for (stroke in selectedStrokes) s.markModified(pageIndex, stroke)
+        if (selectedStrokes.isNotEmpty()) onChanged?.invoke()
     }
 
     private fun moveSelectionBy(vx: Float, vy: Float) {
@@ -347,6 +486,36 @@ class PageView(context: Context) : View(context) {
         transformSelection { x, y -> cx + (x - cx) * factor to cy + (y - cy) * factor }
     }
 
+    /** 拖动手柄期间的静默变换：只改坐标、重算包围盒、刷新，不置脏（结束时统一提交）。 */
+    private fun applySelTransform(fn: (Float, Float) -> Pair<Float, Float>) {
+        for (stroke in selectedStrokes) {
+            for (i in stroke.points.indices) {
+                val (x, y, p) = stroke.points[i]
+                val (nx, ny) = fn(x, y)
+                stroke.points[i] = Triple(nx, ny, p)
+            }
+        }
+        recomputeSelBBox()
+        invalidate()
+    }
+
+    private fun scaleSelectionFrom(ax: Float, ay: Float, factor: Float) {
+        applySelTransform { x, y -> ax + (x - ax) * factor to ay + (y - ay) * factor }
+    }
+
+    private fun rotateSelectionRad(rad: Float) {
+        val b = selBBox ?: return
+        val cosA = kotlin.math.cos(rad)
+        val sinA = kotlin.math.sin(rad)
+        val cx = b.centerX()
+        val cy = b.centerY()
+        applySelTransform { x, y ->
+            val dx = x - cx
+            val dy = y - cy
+            cx + dx * cosA - dy * sinA to cy + dx * sinA + dy * cosA
+        }
+    }
+
     fun rotateSelection(degrees: Float) {
         val b = selBBox ?: return
         val a = Math.toRadians(degrees.toDouble())
@@ -387,6 +556,7 @@ class PageView(context: Context) : View(context) {
         selBBox = null
         selPath.clear()
         movingSel = false
+        activeHandle = SelHandle.NONE
         if (had) onSelectionChanged?.invoke(0)
         invalidate()
     }
@@ -487,6 +657,7 @@ class PageView(context: Context) : View(context) {
                 }
                 selPath.clear()
                 movingSel = false
+                activeHandle = SelHandle.NONE
                 tapMoved = true
                 if (!stylusDown && event.pointerCount >= 2) { // 手写笔在屏时忽略手指（手掌排斥）
                     twoFingerPan = true
@@ -504,6 +675,10 @@ class PageView(context: Context) : View(context) {
                     lastPanY = my
                     clampOffsets()
                     invalidate()
+                    return true
+                }
+                if (activeHandle != SelHandle.NONE) {
+                    dragHandle(event.x, event.y)
                     return true
                 }
                 if (movingSel) {
@@ -538,8 +713,10 @@ class PageView(context: Context) : View(context) {
                     drawPointer = -1
                     erasingActive = false
                 }
-                // 选区拖动结束：把位移写入文档模型（标记需重新保存）
-                if (movingSel) {
+                // 选区变换结束：手柄（缩放/旋转）或盒内拖动，把改动写入文档模型
+                if (activeHandle != SelHandle.NONE) {
+                    finishHandleDrag()
+                } else if (movingSel) {
                     movingSel = false
                     val s2 = session
                     if (s2 != null) {
