@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="hi_bg">#12141A</color>
+    <color name="hi_surface">#1A1D26</color>
+    <color name="hi_divider">#2A2E3A</color>
+    <color name="hi_fill">#2A2E3A</color>
+    <color name="hi_fill_pressed">#3A3F4D</color>
+    <color name="hi_text_primary">#F2F4F7</color>
+    <color name="hi_text_secondary">#BABCC2</color>
+    <color name="hi_text_tertiary">#91959E</color>
+    <color name="hi_brand_container">#16295E</color>
+
+    <color name="hi_ripple">#33FFFFFF</color>
+    <color name="hi_ripple_brand">#4D2660FF</color>
+</resources>

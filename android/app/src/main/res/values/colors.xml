@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 颜色取自 HiUI 4.x 设计令牌（https://xiaomi.github.io/hiui/）：
+     品牌色 brandblue、语义色、gray 阶与 2px 基准间距体系在 Android 上的对应实现 -->
+<resources>
+    <!-- 品牌色 brandblue -->
+    <color name="hi_brand_100">#E5ECFF</color>
+    <color name="hi_brand_500">#2660FF</color>
+    <color name="hi_brand_600">#1843D2</color>
+
+    <!-- 语义色 -->
+    <color name="hi_red_500">#FA4646</color>
+    <color name="hi_green_500">#24B237</color>
+    <color name="hi_orange_500">#FF7700</color>
+
+    <!-- 中性色（语义化命名，深色模式在 values-night 中覆盖） -->
+    <color name="hi_bg">#F5F8FC</color>
+    <color name="hi_surface">#FFFFFF</color>
+    <color name="hi_divider">#EDEFF2</color>
+    <color name="hi_fill">#F2F4F7</color>
+    <color name="hi_fill_pressed">#E6E8EB</color>
+    <color name="hi_text_primary">#1A1D26</color>
+    <color name="hi_text_secondary">#60636B</color>
+    <color name="hi_text_tertiary">#91959E</color>
+    <color name="hi_brand_container">#E5ECFF</color>
+
+    <!-- 触摸涟漪 -->
+    <color name="hi_ripple">#1F1A1D26</color>
+    <color name="hi_ripple_light">#33FFFFFF</color>
+    <color name="hi_ripple_brand">#332660FF</color>
+</resources>

@@ -12,6 +12,7 @@ ocr_modules_dml/
 # 安卓版构建产物与本地工具链
 _android-tools/
 android/.gradle/
+android/.idea/
 android/build/
 android/app/build/
 android/local.properties

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 工具芯片：选中 = 品牌色浅底，未选中 = 浅灰底，圆角 8dp -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="@color/hi_ripple_brand">
+    <item android:state_selected="true">
+        <shape android:shape="rectangle">
+            <corners android:radius="8dp" />
+            <solid android:color="@color/hi_brand_container" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="8dp" />
+            <solid android:color="@color/hi_fill" />
+        </shape>
+    </item>
+</ripple>

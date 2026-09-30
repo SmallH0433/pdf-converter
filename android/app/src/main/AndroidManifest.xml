@@ -8,7 +8,7 @@
         android:icon="@drawable/ic_launcher"
         android:label="PDF阅读器"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Material3.DayNight.NoActionBar">
+        android:theme="@style/Theme.PdfReader">
 
         <activity
             android:name=".MainActivity"

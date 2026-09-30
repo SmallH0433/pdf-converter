@@ -5,10 +5,14 @@ import android.graphics.RectF
 import android.net.Uri
 import android.os.Bundle
 import android.text.InputType
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -17,6 +21,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import java.io.File
 
 /**
@@ -26,6 +31,7 @@ import java.io.File
 class MainActivity : AppCompatActivity() {
 
     private lateinit var pageView: PageView
+    private lateinit var titleText: TextView
     private lateinit var statusText: TextView
     private lateinit var pageLabel: TextView
     private lateinit var searchRow: LinearLayout
@@ -95,7 +101,10 @@ class MainActivity : AppCompatActivity() {
     // ---- UI ----
 
     private fun buildUi() {
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(colorOf(R.color.hi_bg))
+        }
         // 避免内容被状态栏/导航条遮挡（顶部工具条会被状态栏盖住导致上半截点不到）
         androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
             val bars = insets.getInsets(
@@ -104,54 +113,81 @@ class MainActivity : AppCompatActivity() {
             insets
         }
 
-        root.addView(toolbarRow {
-            addView(btn("打开") { openPdfLauncher.launch(arrayOf("application/pdf")) })
-            addView(btn("◀") { showPage((pageView.pageIndex - 1)) })
-            pageLabel = label("0 / 0")
-            addView(pageLabel)
-            addView(btn("▶") { showPage(pageView.pageIndex + 1) })
-            addView(btn("适应") { pageView.fitToWidth() })
-            addView(btn("查找") { toggleSearch() })
-            addView(btn("保存") { save() })
-            addView(btn("另存") {
+        // ── 顶栏：白底卡片，底部分隔线 ──
+        val topBar = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(colorOf(R.color.hi_surface))
+        }
+
+        // 第一行：打开 + 文件名 + 文件操作
+        topBar.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            addView(primaryBtn("打开") { openPdfLauncher.launch(arrayOf("application/pdf")) })
+            titleText = TextView(this@MainActivity).apply {
+                text = "PDF 阅读器"
+                textSize = 16f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                setTextColor(colorOf(R.color.hi_text_primary))
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setPadding(dp(12), 0, dp(4), 0)
+                layoutParams = LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            addView(titleText)
+            addView(ghostBtn("查找") { toggleSearch() })
+            addView(ghostBtn("保存") { save() })
+            addView(ghostBtn("另存") {
                 createPdfLauncher.launch(pdfName.removeSuffix(".pdf") + "_标注.pdf")
             })
         })
+        topBar.addView(divider())
 
-        root.addView(toolbarRow {
+        // 第二行：工具芯片（选中项高亮为品牌色浅底）
+        topBar.addView(horizontalStrip {
             for ((t, name) in listOf(
                 Tool.SELECT to "选择", Tool.PEN to "手写",
                 Tool.NOTE to "留言", Tool.ERASER to "橡皮",
                 Tool.SELECT_STROKE to "框选")) {
-                val b = btn(name) { setTool(t) }
+                val b = chip(name) { setTool(t) }
                 toolButtons[t] = b
                 addView(b)
             }
             // 框选 / 圈选切换（框选工具下生效）
-            modeBtn = btn("模式：框") {
+            modeBtn = chip("模式：框") {
                 pageView.selModeRect = !pageView.selModeRect
                 modeBtn.text = if (pageView.selModeRect) "模式：框" else "模式：圈"
             }
             addView(modeBtn)
-            colorBtn = btn("笔色：红") { cycleColor() }
+            colorBtn = chip("") { cycleColor() }
             addView(colorBtn)
-            addView(btn("撤销") { undo() })
+            addView(chip("撤销") { undo() })
         })
+        root.addView(topBar)
 
         // 选中笔画操作条（有选区时显示）
         selBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            selCountLabel = label("已选 0 笔")
+            setBackgroundColor(colorOf(R.color.hi_surface))
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            selCountLabel = TextView(this@MainActivity).apply {
+                text = "已选 0 笔"
+                textSize = 13f
+                setTextColor(colorOf(R.color.hi_text_secondary))
+                setPadding(dp(8), 0, dp(8), 0)
+            }
             addView(selCountLabel)
-            selColorBtn = btn("改色：红") { cycleSelectionColor() }
+            selColorBtn = chip("") { cycleSelectionColor() }
             addView(selColorBtn)
-            addView(btn("放大") { pageView.scaleSelection(1.1f) })
-            addView(btn("缩小") { pageView.scaleSelection(1 / 1.1f) })
-            addView(btn("左旋") { pageView.rotateSelection(15f) })
-            addView(btn("右旋") { pageView.rotateSelection(-15f) })
-            addView(btn("删除") { pageView.deleteSelection() })
-            addView(btn("完成") { pageView.clearSelection() })
+            addView(chip("放大") { pageView.scaleSelection(1.1f) })
+            addView(chip("缩小") { pageView.scaleSelection(1 / 1.1f) })
+            addView(chip("左旋") { pageView.rotateSelection(15f) })
+            addView(chip("右旋") { pageView.rotateSelection(-15f) })
+            addView(chip("删除") { pageView.deleteSelection() })
+            addView(chip("完成") { pageView.clearSelection() })
         }
         selBarScroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
@@ -164,17 +200,28 @@ class MainActivity : AppCompatActivity() {
         searchRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(colorOf(R.color.hi_surface))
+            setPadding(dp(12), dp(8), dp(8), dp(8))
             visibility = View.GONE
             searchInput = EditText(this@MainActivity).apply {
                 hint = "输入查找内容（文字层）"
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                textSize = 14f
+                setTextColor(colorOf(R.color.hi_text_primary))
+                setHintTextColor(colorOf(R.color.hi_text_tertiary))
+                setBackgroundResource(R.drawable.hi_input_bg)
+                setPadding(dp(12), 0, dp(12), 0)
+                layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f)
                 setSingleLine()
             }
             addView(searchInput)
-            addView(btn("搜索") { startSearch() })
-            addView(btn("↑") { stepHit(-1) })
-            addView(btn("↓") { stepHit(1) })
-            searchCount = label("")
+            addView(tonalBtn("搜索") { startSearch() })
+            addView(tonalBtn("↑") { stepHit(-1) })
+            addView(tonalBtn("↓") { stepHit(1) })
+            searchCount = TextView(this@MainActivity).apply {
+                textSize = 13f
+                setTextColor(colorOf(R.color.hi_text_secondary))
+                setPadding(dp(12), 0, dp(4), 0)
+            }
             addView(searchCount)
         }
         root.addView(searchRow)
@@ -193,18 +240,64 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(pageView)
 
-        statusText = label("打开或选择 PDF 开始阅读（单指使用工具，双指拖动缩放页面）")
-        statusText.setPadding(16, 4, 16, 8)
-        root.addView(statusText)
+        // ── 底栏：状态 + 翻页导航 ──
+        val bottomBar = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(colorOf(R.color.hi_surface))
+        }
+        bottomBar.addView(divider())
+        bottomBar.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            statusText = TextView(this@MainActivity).apply {
+                text = "打开或选择 PDF 开始阅读（单指使用工具，双指拖动缩放页面）"
+                textSize = 12f
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(colorOf(R.color.hi_text_tertiary))
+                setPadding(dp(8), 0, dp(8), 0)
+                layoutParams = LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            addView(statusText)
+            addView(tonalBtn("◀") { showPage(pageView.pageIndex - 1) })
+            pageLabel = TextView(this@MainActivity).apply {
+                text = "0 / 0"
+                textSize = 13f
+                gravity = Gravity.CENTER
+                setTextColor(colorOf(R.color.hi_text_primary))
+                setPadding(dp(8), 0, dp(8), 0)
+            }
+            addView(pageLabel)
+            addView(tonalBtn("▶") { showPage(pageView.pageIndex + 1) })
+            addView(ghostBtn("适应") { pageView.fitToWidth() })
+        })
+        root.addView(bottomBar)
 
         setContentView(root)
+        updateColorBtnText()
+        updateSelColorBtnText()
         setTool(Tool.PEN)
     }
 
-    private fun toolbarRow(build: LinearLayout.() -> Unit): HorizontalScrollView {
+    // ---- HiUI 风格控件工厂（圆角 8dp、14sp 正文、8dp 基准间距） ----
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    private fun colorOf(res: Int) = ContextCompat.getColor(this, res)
+
+    private fun divider(): View = View(this).apply {
+        setBackgroundColor(colorOf(R.color.hi_divider))
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
+    }
+
+    private fun horizontalStrip(build: LinearLayout.() -> Unit): HorizontalScrollView {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), 0, dp(8), dp(8))
             build()
         }
         return HorizontalScrollView(this).apply {
@@ -213,20 +306,54 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun btn(text: String, onClick: () -> Unit): Button =
+    private fun baseBtn(text: String, onClick: () -> Unit): Button =
         Button(this).apply {
             this.text = text
             minWidth = 0
             minimumWidth = 0
-            setPadding(24, 0, 24, 0)
+            minHeight = 0
+            minimumHeight = 0
+            textSize = 14f
+            isAllCaps = false
+            stateListAnimator = null
+            setPadding(dp(14), 0, dp(14), 0)
             setOnClickListener { onClick() }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, dp(36)).apply {
+                marginStart = dp(8)
+            }
         }
 
-    private fun label(text: String): TextView =
-        TextView(this).apply {
-            this.text = text
-            gravity = Gravity.CENTER
-            setPadding(16, 0, 16, 0)
+    private fun primaryBtn(text: String, onClick: () -> Unit): Button =
+        baseBtn(text, onClick).apply {
+            setBackgroundResource(R.drawable.hi_btn_primary)
+            setTextColor(Color.WHITE)
+        }
+
+    private fun tonalBtn(text: String, onClick: () -> Unit): Button =
+        baseBtn(text, onClick).apply {
+            setBackgroundResource(R.drawable.hi_btn_tonal)
+            setTextColor(colorOf(R.color.hi_text_primary))
+        }
+
+    private fun ghostBtn(text: String, onClick: () -> Unit): Button =
+        baseBtn(text, onClick).apply {
+            setBackgroundResource(R.drawable.hi_btn_ghost)
+            setTextColor(colorOf(R.color.hi_brand_500))
+        }
+
+    private fun chip(text: String, onClick: () -> Unit): Button =
+        baseBtn(text, onClick).apply {
+            setBackgroundResource(R.drawable.hi_chip)
+            setTextColor(ContextCompat.getColorStateList(
+                this@MainActivity, R.color.hi_chip_text))
+        }
+
+    /** 文字前加一颗当前颜色的圆点，直观展示笔色。 */
+    private fun colorDotLabel(prefix: String, c: Int, name: String): CharSequence =
+        SpannableString("$prefix● $name").apply {
+            setSpan(ForegroundColorSpan(c), prefix.length, prefix.length + 1,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
 
     // ---- 文件 ----
@@ -354,27 +481,36 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateStatus() {
-        statusText.text = "$pdfName · ${if (dirty) "有未保存修改" else "已保存"}"
+        titleText.text = pdfName.removeSuffix(".pdf")
+        statusText.text = if (dirty) "有未保存修改" else "已保存"
     }
 
     private fun setTool(t: Tool) {
         if (t != Tool.SELECT_STROKE) pageView.clearSelection()
         pageView.tool = t
-        toolButtons.forEach { (k, b) -> b.alpha = if (k == t) 1f else 0.55f }
+        toolButtons.forEach { (k, b) -> b.isSelected = (k == t) }
+    }
+
+    private fun updateColorBtnText() {
+        val (c, name) = colors[colorIdx]
+        colorBtn.text = colorDotLabel("笔色 ", c, name)
+    }
+
+    private fun updateSelColorBtnText() {
+        val (c, name) = colors[selColorIdx]
+        selColorBtn.text = colorDotLabel("改色 ", c, name)
     }
 
     private fun cycleColor() {
         colorIdx = (colorIdx + 1) % colors.size
-        val (c, name) = colors[colorIdx]
-        pageView.penColor = c
-        colorBtn.text = "笔色：$name"
+        pageView.penColor = colors[colorIdx].first
+        updateColorBtnText()
     }
 
     private fun cycleSelectionColor() {
         selColorIdx = (selColorIdx + 1) % colors.size
-        val (c, name) = colors[selColorIdx]
-        selColorBtn.text = "改色：$name"
-        pageView.colorSelection(c)
+        updateSelColorBtnText()
+        pageView.colorSelection(colors[selColorIdx].first)
     }
 
     private fun undo() {
@@ -390,17 +526,35 @@ class MainActivity : AppCompatActivity() {
 
     // ---- 留言 ----
 
-    private fun placeNoteDialog(x: Float, y: Float) {
-        val s = session ?: return
+    private fun noteInput(text: String = ""): Pair<FrameLayout, EditText> {
         val input = EditText(this).apply {
+            setText(text)
             hint = "留言内容"
+            textSize = 14f
+            setTextColor(colorOf(R.color.hi_text_primary))
+            setHintTextColor(colorOf(R.color.hi_text_tertiary))
+            setBackgroundResource(R.drawable.hi_input_bg)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             minLines = 3
             gravity = Gravity.TOP
         }
+        val box = FrameLayout(this).apply {
+            addView(input, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(dp(20), dp(8), dp(20), 0)
+            })
+        }
+        return box to input
+    }
+
+    private fun placeNoteDialog(x: Float, y: Float) {
+        val s = session ?: return
+        val (box, input) = noteInput()
         val dlg = AlertDialog.Builder(this)
             .setTitle("新建留言")
-            .setView(input)
+            .setView(box)
             .setPositiveButton("确定") { _, _ ->
                 val text = input.text.toString().trim()
                 if (text.isNotEmpty()) {
@@ -419,15 +573,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun editNoteDialog(note: NoteMark) {
         val s = session ?: return
-        val input = EditText(this).apply {
-            setText(note.text)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-            minLines = 3
-            gravity = Gravity.TOP
-        }
+        val (box, input) = noteInput(note.text)
         val dlg = AlertDialog.Builder(this)
             .setTitle("编辑留言")
-            .setView(input)
+            .setView(box)
             .setPositiveButton("保存") { _, _ ->
                 val text = input.text.toString().trim()
                 if (text.isNotEmpty() && text != note.text) {

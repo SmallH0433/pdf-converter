@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 主要按钮：HiUI 品牌蓝填充，圆角 8dp（HiUI radius-xl） -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="@color/hi_ripple_light">
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="8dp" />
+            <solid android:color="@color/hi_brand_500" />
+        </shape>
+    </item>
+</ripple>

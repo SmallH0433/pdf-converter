@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 次要按钮：浅灰填充，圆角 8dp -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="@color/hi_ripple">
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="8dp" />
+            <solid android:color="@color/hi_fill" />
+        </shape>
+    </item>
+</ripple>

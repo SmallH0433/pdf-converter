@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.PdfReader" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/hi_brand_500</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorPrimaryContainer">@color/hi_brand_container</item>
+        <item name="colorOnPrimaryContainer">@color/hi_brand_100</item>
+        <item name="android:colorBackground">@color/hi_bg</item>
+        <item name="android:statusBarColor">@color/hi_bg</item>
+        <item name="android:navigationBarColor">@color/hi_surface</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
