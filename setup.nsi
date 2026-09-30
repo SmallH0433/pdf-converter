@@ -3,7 +3,7 @@
 
 !include "MUI2.nsh"
 
-!define APP_VERSION "1.2.1"
+!define APP_VERSION "1.2.2"
 
 Name "PDF转换工具"
 OutFile "installer\PDF-Converter-Setup-${APP_VERSION}.exe"

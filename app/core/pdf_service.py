@@ -146,12 +146,116 @@ def extract_pages_to_pdf(
 
 RE_CHINESE_HEADING = re.compile(r"^第\s*[0-9０-９一二三四五六七八九十百千零]+\s*([章节篇部卷回])")
 CHAPTER_LEVEL = {"篇": 1, "部": 1, "卷": 1, "章": 1, "回": 1, "节": 2}
-RE_EN_HEADING = re.compile(r"^(chapter|part|section|appendix)\s+[\dIVXLC]+", re.I)
+RE_EN_HEADING = re.compile(
+    r"^(chapter|part|section|appendix)\s*"
+    r"([0-9]+(?:\s*\.\s*[0-9]+){0,4}|[IVXLC]+)\b",
+    re.I,
+)
 RE_NUM_HEADING = re.compile(r"^(\d+(?:\.\d+){0,5})\s*[、．.:：]?\s+\S")
 RE_NUM_BARE = re.compile(r"^(\d+(?:\.\d+)+)\s*$")  # 单独成行的编号，如 "1.2"
 RE_PAGENUM = re.compile(r"^[0-9０-９]{1,4}$|^[ivxlcdmIVXLCDM]{1,4}$")
 RE_WORD = re.compile(r"[A-Za-z]{3,}|[一-鿿]{2,}")
 RE_HEADING_START = re.compile(r"^([A-Z]|[^ -~])")  # 大写字母或非 ASCII（汉字等）开头
+RE_MATH_RELATION = re.compile(r"(?:=|≠|≈|≤|≥|<|>)")
+RE_MATH_SYMBOL = re.compile(r"[=+*/^<>≤≥≠≈∫∑√{}\[\]|\\]")
+
+
+def _mostly_words(text: str) -> bool:
+    """判断文本是否像自然语言标题，而不是变量、缩写或公式碎片。"""
+    letters = sum(1 for c in text if c.isalpha() or "一" <= c <= "鿿")
+    if letters < len(text) * 0.5 or not RE_WORD.search(text):
+        return False
+    if re.search(r"[一-鿿]{2,}", text):
+        return True
+    words = re.findall(r"[A-Za-z]{2,}", text)
+    natural = [
+        word for word in words
+        if (word.islower() or word.istitle() or (word.isupper() and len(word) >= 5))
+        and re.search(r"[AEIOUYaeiouy]", word)
+    ]
+    # 单词标题需要足够长；多词标题则允许 of / and 等短词。
+    return any(len(word) >= 4 for word in natural) or len(natural) >= 2
+
+
+def _looks_like_formula(text: str) -> bool:
+    """识别不应进入书签的公式/变量行。编号标题仍会由编号规则单独判断。"""
+    if RE_CHINESE_HEADING.match(text) or RE_EN_HEADING.match(text):
+        return False
+    compact = re.sub(r"\s+", "", text)
+    if RE_MATH_RELATION.search(text):
+        return True
+    symbols = len(RE_MATH_SYMBOL.findall(text))
+    if symbols >= 2 or (symbols and len(compact) <= 18):
+        return True
+    # 多个短变量（VTH、RoN、CLK2 等）通常来自电路图或公式，而非自然语言标题。
+    tokens = re.findall(r"[A-Za-z][A-Za-z0-9]*(?:\([^)]*\))?", text)
+    if tokens and all(len(token) <= 8 for token in tokens):
+        variable_like = sum(
+            1 for token in tokens
+            if any(c.isdigit() for c in token)
+            or (sum(c.isupper() for c in token) >= 2 and not token.isupper())
+            or token.isupper()
+        )
+        if variable_like >= max(1, len(tokens) - 1) and len(tokens) <= 5:
+            return True
+    return False
+
+
+def _merge_numbered_row_fragments(raw: list[dict]) -> list[dict]:
+    """合并 PDF 把同一视觉行拆开的 ``1.2``、标题词组。
+
+    只从点号编号开始、只向右合并同字号且间距很小的片段，并跳过页眉页脚区域，
+    避免把双栏正文或页眉中的 ``Section 1.2`` 拼进正文标题。
+    """
+    consumed: set[int] = set()
+    replacements: dict[int, dict] = {}
+    by_page: dict[int, list[int]] = {}
+    for idx, item in enumerate(raw):
+        by_page.setdefault(item["page"], []).append(idx)
+
+    for idx, item in enumerate(raw):
+        if idx in consumed:
+            continue
+        match = RE_NUM_HEADING.match(item["text"]) or RE_NUM_BARE.match(item["text"])
+        bbox = item.get("bbox")
+        page_height = item.get("page_height", 0)
+        if not match or not bbox or not page_height:
+            continue
+        if bbox[1] < page_height * 0.06 or bbox[3] > page_height * 0.94:
+            continue
+        cy = (bbox[1] + bbox[3]) / 2
+        candidates = []
+        for other_idx in by_page[item["page"]]:
+            if other_idx == idx or other_idx in consumed:
+                continue
+            other = raw[other_idx]
+            obox = other.get("bbox")
+            if not obox or obox[0] < bbox[2] - 1:
+                continue
+            ocy = (obox[1] + obox[3]) / 2
+            if abs(ocy - cy) <= max(2.0, (bbox[3] - bbox[1]) * 0.2) \
+                    and abs(other["size"] - item["size"]) <= max(1.0, item["size"] * 0.12):
+                candidates.append((obox[0], other_idx))
+        candidates.sort()
+
+        parts = [(bbox[0], item["text"], idx)]
+        right = bbox[2]
+        for x0, other_idx in candidates:
+            other = raw[other_idx]
+            obox = other["bbox"]
+            if x0 - right > max(40.0, item["size"] * 4.0):
+                break
+            parts.append((x0, other["text"], other_idx))
+            right = max(right, obox[2])
+        if len(parts) == 1:
+            continue
+        merged = dict(item)
+        merged["text"] = " ".join(part[1].strip() for part in parts if part[1].strip())
+        merged["bbox"] = (bbox[0], bbox[1], right, bbox[3])
+        replacements[idx] = merged
+        consumed.update(part[2] for part in parts[1:])
+
+    return [replacements.get(idx, item) for idx, item in enumerate(raw) if idx not in consumed]
 
 
 def normalize_toc(toc: list[dict]) -> list[dict]:
@@ -221,7 +325,12 @@ def detect_headings(
                         (s.get("flags", 0) & 16) or "bold" in s.get("font", "").lower()
                         for s in spans
                     )
-                    raw.append({"page": i, "text": text, "size": rsize, "bold": bold})
+                    raw.append({
+                        "page": i, "text": text, "size": rsize, "bold": bold,
+                        "bbox": tuple(line.get("bbox", ())),
+                        "page_height": page.rect.height,
+                        "order": len(raw),
+                    })
                     size_counter[rsize] = size_counter.get(rsize, 0) + len(text)
                     # 正文字号按长文本行统计，避免标题行干扰
                     if len(text) >= 30:
@@ -234,7 +343,13 @@ def detect_headings(
                     if len(text) < 2 or len(text) > 120:
                         continue
                     rsize = round(ol["size"] * 2) / 2
-                    raw.append({"page": i, "text": text, "size": rsize, "bold": False})
+                    rect = ol.get("rect")
+                    raw.append({
+                        "page": i, "text": text, "size": rsize, "bold": False,
+                        "bbox": tuple(rect) if rect is not None else (),
+                        "page_height": page.rect.height,
+                        "order": len(raw),
+                    })
                     size_counter[rsize] = size_counter.get(rsize, 0) + len(text)
                     if len(text) >= 30:
                         page_counter[rsize] = page_counter.get(rsize, 0) + len(text)
@@ -263,6 +378,10 @@ def detect_headings(
     def body_of(page: int) -> float:
         return page_bodies.get(page, global_body)
 
+    # 很多排版型 PDF 会把 ``1.2 标题文字`` 拆成同一基线上的多个文本行。
+    # 在套用编号规则前先按几何位置还原，否则裸编号会因“不含单词”而被漏掉。
+    raw = _merge_numbered_row_fragments(raw)
+
     # 页眉页脚：同一短文本出现在大量页面上
     freq: dict[str, set] = {}
     for r in raw:
@@ -283,7 +402,15 @@ def detect_headings(
             return min(CHAPTER_LEVEL.get(m.group(1), 1), max_level), "strong", None
         m = RE_EN_HEADING.match(text)
         if m:
-            return (2 if m.group(1).lower() == "section" else 1), "strong", None
+            keyword = m.group(1).lower()
+            number = re.sub(r"\s+", "", m.group(2))
+            comps = [int(c) for c in number.split(".")] if number[0].isdigit() else None
+            if comps and (comps[0] < 1 or any(c > 99 for c in comps)):
+                return None
+            level = max(2, len(comps)) if keyword == "section" and comps else (
+                2 if keyword == "section" else 1
+            )
+            return min(level, max_level), "strong", comps
         m = RE_NUM_HEADING.match(text) or RE_NUM_BARE.match(text)
         if m:
             comps = [int(c) for c in m.group(1).split(".")]
@@ -293,16 +420,12 @@ def detect_headings(
             return min(len(comps), max_level), kind, comps
         return None
 
-    def mostly_words(text: str) -> bool:
-        """字母/汉字占比过半且含完整词才算文本行，过滤公式行（大号积分号等会拉高行字号）。"""
-        alnum = sum(1 for c in text if c.isalpha() or "一" <= c <= "鿿")
-        return alnum >= len(text) * 0.5 and bool(RE_WORD.search(text))
-
     # 明显大于本页正文的字号 → 层级（字号越大层级越高）
     # 标题通常是短行、以词开头，借此过滤 OCR 文本层里的大号公式碎片
     font_sizes = sorted(
         {r["size"] for r in raw
-         if use_font and len(r["text"]) <= 60 and mostly_words(r["text"])
+         if use_font and len(r["text"]) <= 60 and _mostly_words(r["text"])
+         and not _looks_like_formula(r["text"])
          and RE_HEADING_START.match(r["text"])
          and r["size"] >= body_of(r["page"]) * 1.12},
         reverse=True,
@@ -314,6 +437,8 @@ def detect_headings(
         text = r["text"]
         if RE_PAGENUM.match(text):
             continue
+        if _looks_like_formula(text):
+            continue
         body = body_of(r["page"])
         numbered = numbering_level(text) if use_num else None
         nlvl = numbered[0] if numbered else None
@@ -321,21 +446,22 @@ def detect_headings(
         num_comps = None
         if numbered is not None and len(text) <= 80:
             kind = numbered[1]
-            if kind == "strong" and mostly_words(text):
+            if kind == "strong" and _mostly_words(text):
                 level = nlvl
-            elif kind == "dotted" and mostly_words(text) \
-                    and (r["bold"] or r["size"] >= body * 0.9):
-                # 带点编号（如 "1.2 xxx" 或单独成行的 "1.2"），容忍 OCR 缩放导致的轻微偏小；
+            elif kind == "dotted" and _mostly_words(text) \
+                    and (r["bold"] or r["size"] >= body * 0.72):
+                # 带点编号（如 "1.2 xxx"），序列一致性本身已有较强佐证，因此允许
+                # 章节标题明显小于正文；老旧教材常用 8pt 小节名搭配 10pt 正文。
                 # 需以词为主体，过滤 "1.2 V=IR" 之类的公式行
                 level = nlvl
                 num_comps = numbered[2][:nlvl]
-            elif kind == "plain" and mostly_words(text) \
+            elif kind == "plain" and _mostly_words(text) \
                     and (r["bold"] or r["size"] >= body * 1.08):
                 # 单整数编号（如 "1 xxx"）最易误伤习题号、年份，需粗体或明显大字号佐证
                 level = nlvl
                 num_comps = numbered[2][:nlvl]
         if level is None and use_font and len(text) <= 60 \
-                and mostly_words(text) and RE_HEADING_START.match(text) \
+                and _mostly_words(text) and RE_HEADING_START.match(text) \
                 and r["size"] in size_level and r["size"] >= body * 1.12:
             level = size_level[r["size"]]
         if level is None:
@@ -343,7 +469,10 @@ def detect_headings(
         # 反复出现的页眉页脚文本，除非明显是标题（带编号或字号很大）
         if text in repeated and not (nlvl is not None or r["size"] >= body * 1.3):
             continue
-        entry = {"level": level, "title": text, "page": r["page"]}
+        entry = {
+            "level": level, "title": text, "page": r["page"],
+            "_bbox": r.get("bbox"), "_order": r.get("order", 0),
+        }
         if num_comps:
             # 编号类标题记录上下文信息，供序列一致性过滤
             entry.update(num=num_comps, bold=r["bold"], size=r["size"])
@@ -351,16 +480,34 @@ def detect_headings(
 
     headings = _filter_numbering_by_sequence(headings)
 
-    # 同页连续的同级标题行合并为一个（多行排版的标题会被拆成多条）
+    # 只合并原文中真正相邻、版面上也紧邻的标题行。旧逻辑会把同页相距很远的
+    # 公式和标题拼在一起，形成“公式 + 标题”的假书签。
     merged: list[dict] = []
     for h in headings:
-        if (merged and merged[-1]["page"] == h["page"]
-                and merged[-1]["level"] == h["level"]
-                and len(merged[-1]["title"]) + len(h["title"]) + 1 <= 100):
+        prev = merged[-1] if merged else None
+        pbox = prev.get("_bbox") if prev else None
+        hbox = h.get("_bbox")
+        close_in_source = prev is not None and h["_order"] <= prev["_order"] + 1
+        close_on_page = bool(
+            pbox and hbox
+            and -2 <= hbox[1] - pbox[3] <= max(30, (pbox[3] - pbox[1]) * 1.8)
+            and abs(hbox[0] - pbox[0]) <= 90
+        )
+        if (prev and prev["page"] == h["page"] and prev["level"] == h["level"]
+                and close_in_source and close_on_page
+                and len(prev["title"]) + len(h["title"]) + 1 <= 100):
             merged[-1]["title"] += " " + h["title"]
+            merged[-1]["_bbox"] = (
+                min(pbox[0], hbox[0]), min(pbox[1], hbox[1]),
+                max(pbox[2], hbox[2]), max(pbox[3], hbox[3]),
+            )
+            merged[-1]["_order"] = h["_order"]
         else:
             merged.append(dict(h))
 
+    for item in merged:
+        item.pop("_bbox", None)
+        item.pop("_order", None)
     return normalize_toc(merged)
 
 

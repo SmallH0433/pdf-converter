@@ -15,13 +15,21 @@
 
 ## 安装
 
-从 [GitHub Releases](https://github.com/SmallH0433/pdf-converter/releases) 下载最新安装包，双击安装即可。当前稳定版为 **1.2.1**：
+从 [GitHub Releases](https://github.com/SmallH0433/pdf-converter/releases) 下载最新版本。当前稳定版为 **1.2.2**：
 
-- [下载 PDF-Converter-Setup-1.2.1.exe](https://github.com/SmallH0433/pdf-converter/releases/download/v1.2.1/PDF-Converter-Setup-1.2.1.exe)
+- Windows 10 / 11：[下载 PDF-Converter-Setup-1.2.2.exe](https://github.com/SmallH0433/pdf-converter/releases/download/v1.2.2/PDF-Converter-Setup-1.2.2.exe)
+- Android 8.0+：[下载 PDF-Converter-Android-1.0.1.apk](https://github.com/SmallH0433/pdf-converter/releases/download/v1.2.2/PDF-Converter-Android-1.0.1.apk)
 
 - 无需 Python 环境，无需管理员权限（安装到用户目录）
 - 支持 Windows 10 / 11（64 位）；Windows 10 建议 21H2 及以上
 - 自带卸载程序，注册到 Windows「应用和功能」
+
+### 1.2.2 更新内容
+
+- 自动书签支持 `Section 1.2`、`Section1.2` 等小节格式，并能还原 PDF 中被拆开的编号标题
+- 加强公式与变量行过滤，避免将等式误判为书签或与同页标题错误拼接
+- 安卓版采用现代化 HiUI 风格，完善深色模式与触控交互
+- 安卓版框选新增拖拽手柄缩放、旋转，转屏后自动适应页面宽度
 
 ### 1.2.1 更新内容
 
@@ -85,7 +93,7 @@ python -m venv .venv
 # 生成 dist/PDF转换工具/（文件夹版，OCR 组件内置）
 .venv/Scripts/python.exe -m PyInstaller PDF转换工具.spec
 
-# 生成版本化安装程序 installer/PDF-Converter-Setup-1.2.1.exe（需 NSIS 3.12，置于 _nsis/）
+# 生成版本化安装程序 installer/PDF-Converter-Setup-1.2.2.exe（需 NSIS 3.12，置于 _nsis/）
 NSISDIR="$(pwd -W)/_nsis/nsis-bundle/windows" _nsis/nsis-bundle/windows/makensis.exe setup.nsi
 ```
 
