@@ -15,14 +15,20 @@
 
 ## 安装
 
-从 [GitHub Releases](https://github.com/SmallH0433/pdf-converter/releases) 下载最新版本。Windows 当前稳定版为 **1.2.3**：
+从 [GitHub Releases](https://github.com/SmallH0433/pdf-converter/releases) 下载最新版本。Windows 当前稳定版为 **1.2.4**：
 
-- Windows 10 / 11：[下载 PDF-Converter-Setup-1.2.3.exe](https://github.com/SmallH0433/pdf-converter/releases/download/v1.2.3/PDF-Converter-Setup-1.2.3.exe)
+- Windows 10 / 11：[下载 PDF-Converter-Setup-1.2.4.exe](https://github.com/SmallH0433/pdf-converter/releases/download/v1.2.4/PDF-Converter-Setup-1.2.4.exe)
 - Android 8.0+：[下载 PDF-Converter-Android-1.0.1.apk](https://github.com/SmallH0433/pdf-converter/releases/download/v1.2.2/PDF-Converter-Android-1.0.1.apk)
 
 - 无需 Python 环境，无需管理员权限（安装到用户目录）
 - 支持 Windows 10 / 11（64 位）；Windows 10 建议 21H2 及以上
 - 自带卸载程序，注册到 Windows「应用和功能」
+- 安装新版本时自动识别并沿用旧版安装目录，覆盖旧程序文件，保留已下载的 GPU 加速包
+
+### 1.2.4 更新内容
+
+- Windows 安装包支持自动查找旧版本的自定义安装路径并直接覆盖升级
+- 升级时清理旧程序依赖，保留 CUDA / DirectML 加速包；程序运行中则提示关闭后重试
 
 ### 1.2.3 更新内容
 
@@ -98,8 +104,8 @@ python -m venv .venv
 # 生成 dist/PDF转换工具/（文件夹版，OCR 组件内置）
 .venv/Scripts/python.exe -m PyInstaller PDF转换工具.spec
 
-# 生成版本化安装程序 installer/PDF-Converter-Setup-1.2.3.exe（需 NSIS 3.12，置于 _nsis/）
-NSISDIR="$(pwd -W)/_nsis/nsis-bundle/windows" _nsis/nsis-bundle/windows/makensis.exe setup.nsi
+# 生成版本化安装程序 installer/PDF-Converter-Setup-1.2.4.exe（需 NSIS 3.12，置于 _nsis/）
+_nsis/nsis-bundle/makensis setup.nsi
 ```
 
 命令行 OCR 工具（与 GUI 共用核心逻辑）：
