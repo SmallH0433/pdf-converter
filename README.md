@@ -15,14 +15,19 @@
 
 ## 安装
 
-从 [GitHub Releases](https://github.com/SmallH0433/pdf-converter/releases) 下载最新版本。当前稳定版为 **1.2.2**：
+从 [GitHub Releases](https://github.com/SmallH0433/pdf-converter/releases) 下载最新版本。Windows 当前稳定版为 **1.2.3**：
 
-- Windows 10 / 11：[下载 PDF-Converter-Setup-1.2.2.exe](https://github.com/SmallH0433/pdf-converter/releases/download/v1.2.2/PDF-Converter-Setup-1.2.2.exe)
+- Windows 10 / 11：[下载 PDF-Converter-Setup-1.2.3.exe](https://github.com/SmallH0433/pdf-converter/releases/download/v1.2.3/PDF-Converter-Setup-1.2.3.exe)
 - Android 8.0+：[下载 PDF-Converter-Android-1.0.1.apk](https://github.com/SmallH0433/pdf-converter/releases/download/v1.2.2/PDF-Converter-Android-1.0.1.apk)
 
 - 无需 Python 环境，无需管理员权限（安装到用户目录）
 - 支持 Windows 10 / 11（64 位）；Windows 10 建议 21H2 及以上
 - 自带卸载程序，注册到 Windows「应用和功能」
+
+### 1.2.3 更新内容
+
+- 修复 Windows 安装后因打包混入不兼容的 Poppler ICU DLL 而无法启动
+- 覆盖安装时自动清理 1.2.2 遗留的错误 DLL
 
 ### 1.2.2 更新内容
 
@@ -93,7 +98,7 @@ python -m venv .venv
 # 生成 dist/PDF转换工具/（文件夹版，OCR 组件内置）
 .venv/Scripts/python.exe -m PyInstaller PDF转换工具.spec
 
-# 生成版本化安装程序 installer/PDF-Converter-Setup-1.2.2.exe（需 NSIS 3.12，置于 _nsis/）
+# 生成版本化安装程序 installer/PDF-Converter-Setup-1.2.3.exe（需 NSIS 3.12，置于 _nsis/）
 NSISDIR="$(pwd -W)/_nsis/nsis-bundle/windows" _nsis/nsis-bundle/windows/makensis.exe setup.nsi
 ```
 

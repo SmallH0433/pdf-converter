@@ -7,6 +7,7 @@ from PyInstaller.utils.hooks import collect_all
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import copy_metadata
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 
 # onnxruntime 的 CPU/CUDA/DirectML 发行版会写入同一个包目录。混装时 pip 元数据
 # 看似正常，实际 DLL 可能来自不同版本，最终只剩 CPU Provider 或在目标机加载失败。
@@ -59,6 +60,15 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+# Qt6Core.dll 在 Windows 上调用系统 ICU 的无版本后缀接口。构建机 PATH 中的
+# Poppler 可能带有同名 icuuc.dll（导出 ucnv_open_78 而不是 ucnv_open），
+# PyInstaller 会误收集它，导致安装后在导入 QtWidgets 时立即崩溃。
+# Windows 10/11 自带兼容的 icuuc.dll；不要把外部 Poppler 的 ICU 打进包。
+incompatible_icu = {'icuuc.dll', 'icudt78.dll'}
+a.binaries = [
+    entry for entry in a.binaries
+    if Path(entry[0]).name.lower() not in incompatible_icu
+]
 pyz = PYZ(a.pure)
 
 exe = EXE(

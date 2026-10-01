@@ -3,7 +3,7 @@
 
 !include "MUI2.nsh"
 
-!define APP_VERSION "1.2.2"
+!define APP_VERSION "1.2.3"
 
 Name "PDF转换工具"
 OutFile "installer\PDF-Converter-Setup-${APP_VERSION}.exe"
@@ -27,6 +27,9 @@ SetCompressor /SOLID lzma
 
 Section "Install"
     SetOutPath "$INSTDIR"
+    ; 修复 1.2.2 打包时混入的 Poppler ICU，覆盖安装也必须移除旧 DLL
+    Delete "$INSTDIR\_internal\icuuc.dll"
+    Delete "$INSTDIR\_internal\icudt78.dll"
     File /r "dist\PDF转换工具\*.*"
 
     WriteUninstaller "$INSTDIR\卸载 PDF转换工具.exe"
