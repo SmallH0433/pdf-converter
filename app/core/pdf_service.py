@@ -144,8 +144,8 @@ def extract_pages_to_pdf(
 
 # ---- 书签自动生成 ----
 
-RE_CHINESE_HEADING = re.compile(r"^第\s*[0-9０-９一二三四五六七八九十百千零]+\s*([章节篇部卷回])")
-CHAPTER_LEVEL = {"篇": 1, "部": 1, "卷": 1, "章": 1, "回": 1, "节": 2}
+RE_CHINESE_HEADING = re.compile(r"^第\s*[0-9０-９一二三四五六七八九十百千零]+\s*([章节篇部卷回讲])")
+CHAPTER_LEVEL = {"篇": 1, "部": 1, "卷": 1, "章": 1, "回": 1, "讲": 1, "节": 2}
 RE_EN_HEADING = re.compile(
     r"^(chapter|part|section|appendix)\s*"
     r"([0-9]+(?:\s*\.\s*[0-9]+){0,4}|[IVXLC]+)\b",

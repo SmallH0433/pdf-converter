@@ -7,6 +7,11 @@ __pycache__/
 *.pyc
 ocr_modules/
 ocr_modules_dml/
+llm_models/
+_model_compare/
+_gemma_retry.py
+*.gguf
+*.gguf.part
 *.pdf
 
 # 安卓版构建产物与本地工具链

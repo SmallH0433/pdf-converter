@@ -4,11 +4,13 @@
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
 
-!define APP_VERSION "1.2.4"
+!define APP_VERSION "1.2.16"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\PDF转换工具"
 
 Name "PDF转换工具"
 OutFile "installer\PDF-Converter-Setup-${APP_VERSION}.exe"
+Icon "assets\branding\pdf-converter.ico"
+UninstallIcon "assets\branding\pdf-converter-uninstall.ico"
 Unicode True
 ; 装到用户目录：无需管理员权限，且应用内一键安装 GPU 加速包需要对安装目录有写权限
 ; 空目录便于区分 /D= 显式指定的路径与默认路径，优先沿用旧版安装位置

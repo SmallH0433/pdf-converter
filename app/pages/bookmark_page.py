@@ -4,7 +4,15 @@ from __future__ import annotations
 import os
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QFileDialog,
+    QHBoxLayout,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 from qfluentwidgets import (
     BodyLabel,
@@ -21,7 +29,7 @@ from qfluentwidgets import (
     StrongBodyLabel,
 )
 
-from ..core import ocr_service, pdf_service
+from ..core import llm_bookmarks, ocr_service, pdf_service
 from ..core.workers import DetectHeadingsWorker, WriteBookmarksWorker
 from .widgets import DropCard
 
@@ -81,6 +89,35 @@ class BookmarkPage(QWidget):
         option_row.addStretch(1)
         root.addWidget(option_card)
 
+        llm_card = CardWidget(self)
+        llm_layout = QVBoxLayout(llm_card)
+        llm_layout.setContentsMargins(20, 12, 20, 12)
+        llm_row = QHBoxLayout()
+        self.llm_check = CheckBox("使用本地大模型识别书签", self)
+        self.llm_check.toggled.connect(self._toggle_llm)
+        llm_row.addWidget(self.llm_check)
+        self.model_combo = ComboBox(self)
+        self.model_combo.setMinimumWidth(330)
+        self.model_combo.setMaximumWidth(500)
+        self.model_combo.setEnabled(False)
+        llm_row.addWidget(self.model_combo, 1)
+        self.model_refresh_btn = PushButton("刷新模型", self)
+        self.model_refresh_btn.clicked.connect(self._refresh_models)
+        self.model_refresh_btn.setEnabled(False)
+        llm_row.addWidget(self.model_refresh_btn)
+        self.model_browse_btn = PushButton("选择 GGUF…", self)
+        self.model_browse_btn.clicked.connect(self._browse_model)
+        self.model_browse_btn.setEnabled(False)
+        llm_row.addWidget(self.model_browse_btn)
+        llm_layout.addLayout(llm_row)
+        llm_hint = CaptionLabel(
+            "首次使用会把所选模型复制到应用目录的 llm_models，再通过 LM Studio 在本机加载；"
+            "模型不包含在安装包中。仅支持已下载完成的 GGUF 主模型。", self)
+        llm_hint.setWordWrap(True)
+        llm_layout.addWidget(llm_hint)
+        root.addWidget(llm_card)
+        self._refresh_models()
+
         # 操作行
         action_row = QHBoxLayout()
         self.detect_btn = PrimaryPushButton("开始识别", self)
@@ -89,15 +126,23 @@ class BookmarkPage(QWidget):
         self.cancel_btn = PushButton("取消", self)
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.clicked.connect(self._cancel_detect)
-        self.delete_btn = PushButton("删除选中条目", self)
+        self.delete_btn = PushButton("删除勾选/选中条目", self)
         self.delete_btn.setEnabled(False)
         self.delete_btn.clicked.connect(self._delete_selected)
+        self.select_all_btn = PushButton("全选结果", self)
+        self.select_all_btn.setEnabled(False)
+        self.select_all_btn.clicked.connect(lambda: self._set_all_checked(True))
+        self.clear_selection_btn = PushButton("取消全选", self)
+        self.clear_selection_btn.setEnabled(False)
+        self.clear_selection_btn.clicked.connect(lambda: self._set_all_checked(False))
         self.export_btn = PrimaryPushButton("导出带书签的 PDF", self)
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self._export)
         action_row.addWidget(self.detect_btn)
         action_row.addWidget(self.cancel_btn)
         action_row.addWidget(self.delete_btn)
+        action_row.addWidget(self.select_all_btn)
+        action_row.addWidget(self.clear_selection_btn)
         action_row.addStretch(1)
         action_row.addWidget(self.export_btn)
         root.addLayout(action_row)
@@ -106,14 +151,34 @@ class BookmarkPage(QWidget):
         self.progress.setVisible(False)
         root.addWidget(self.progress)
 
+        self.ocr_progress_label = CaptionLabel("OCR 进度", self)
+        self.ocr_progress_label.setVisible(False)
+        root.addWidget(self.ocr_progress_label)
+        self.ocr_progress = ProgressBar(self)
+        self.ocr_progress.setVisible(False)
+        root.addWidget(self.ocr_progress)
+
+        self.llm_progress_label = CaptionLabel("LLM 识别进度", self)
+        self.llm_progress_label.setVisible(False)
+        root.addWidget(self.llm_progress_label)
+        self.llm_progress = ProgressBar(self)
+        self.llm_progress.setVisible(False)
+        root.addWidget(self.llm_progress)
+
         self.status_label = CaptionLabel("尚未加载文件", self)
         root.addWidget(self.status_label)
+        edit_hint = CaptionLabel("双击标题、页码或层级可直接编辑；勾选多条结果后可批量删除。", self)
+        root.addWidget(edit_hint)
 
         # 书签预览树
         self.tree = QTreeWidget(self)
-        self.tree.setHeaderLabels(["标题", "页码"])
+        self.tree.setHeaderLabels(["标题", "页码", "层级"])
         self.tree.setColumnWidth(0, 560)
+        self.tree.setColumnWidth(1, 90)
         self.tree.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
+        self.tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.tree.itemDoubleClicked.connect(self._edit_item)
+        self.tree.itemChanged.connect(self._on_item_changed)
         self.tree.setMinimumHeight(240)
         root.addWidget(self.tree, 1)
 
@@ -124,6 +189,37 @@ class BookmarkPage(QWidget):
         self.ocr_check.setEnabled(ok)
         if not ok:
             self.ocr_check.setToolTip(f"OCR 不可用：{reason}")
+
+    def _toggle_llm(self, enabled: bool):
+        self.model_combo.setEnabled(enabled)
+        self.model_refresh_btn.setEnabled(enabled)
+        self.model_browse_btn.setEnabled(enabled)
+        self.mode_combo.setEnabled(not enabled)
+
+    def _refresh_models(self):
+        previous = self.model_combo.currentData()
+        self.model_combo.clear()
+        models = llm_bookmarks.list_local_models()
+        for path in models:
+            size_gb = path.stat().st_size / (1024 ** 3)
+            self.model_combo.addItem(f"{path.name} · {size_gb:.1f} GB", userData=str(path))
+        for index in range(self.model_combo.count()):
+            if self.model_combo.itemData(index) == previous:
+                self.model_combo.setCurrentIndex(index)
+                break
+
+    def _browse_model(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择已下载完成的 GGUF 模型", str(llm_bookmarks.lmstudio_models_dir()),
+            "GGUF 模型 (*.gguf)")
+        if not path:
+            return
+        for index in range(self.model_combo.count()):
+            if self.model_combo.itemData(index) == path:
+                self.model_combo.setCurrentIndex(index)
+                return
+        self.model_combo.addItem(os.path.basename(path), userData=path)
+        self.model_combo.setCurrentIndex(self.model_combo.count() - 1)
 
     # ---- 文件加载 ----
     def _load_pdf(self, path: str):
@@ -142,6 +238,8 @@ class BookmarkPage(QWidget):
         self.tree.clear()
         self.export_btn.setEnabled(False)
         self.delete_btn.setEnabled(False)
+        self.select_all_btn.setEnabled(False)
+        self.clear_selection_btn.setEnabled(False)
         msg = f"共 {self._total_pages} 页"
         if existing:
             msg += f" · 已有 {len(existing)} 条书签（导出时将被替换）"
@@ -151,16 +249,26 @@ class BookmarkPage(QWidget):
     def _start_detect(self):
         if not self._pdf_path:
             return
+        model_path = self.model_combo.currentData() if self.llm_check.isChecked() else None
+        if self.llm_check.isChecked() and not model_path:
+            InfoBar.warning("尚未选择模型", "请选择一个已下载完成的 GGUF 模型", parent=self,
+                            position=InfoBarPosition.TOP)
+            return
         mode = MODES[self.mode_combo.currentIndex()][1]
         self.detect_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.export_btn.setEnabled(False)
-        self.progress.setVisible(True)
-        self.progress.setRange(0, self._total_pages)
-        self.progress.setValue(0)
+        use_ocr = self.ocr_check.isChecked()
+        use_llm = bool(model_path)
+        self._show_detect_progress(use_ocr, use_llm)
         self._worker = DetectHeadingsWorker(
-            self._pdf_path, mode, self.level_spin.value(), self.ocr_check.isChecked(), self)
-        self._worker.progress.connect(lambda d, t: self.progress.setValue(d))
+            self._pdf_path, mode, self.level_spin.value(), use_ocr,
+            self, model_path=model_path)
+        if not use_ocr and not use_llm:
+            self._worker.progress.connect(lambda d, t: self.progress.setValue(d))
+        self._worker.ocr_progress.connect(self._update_ocr_progress)
+        self._worker.llm_progress.connect(self._update_llm_progress)
+        self._worker.status.connect(self.status_label.setText)
         self._worker.finished_ok.connect(self._on_detected)
         self._worker.failed.connect(self._on_fail)
         self._worker.start()
@@ -174,6 +282,10 @@ class BookmarkPage(QWidget):
         self._toc = toc
         self._rebuild_tree()
         if not toc:
+            self.export_btn.setEnabled(False)
+            self.delete_btn.setEnabled(False)
+            self.select_all_btn.setEnabled(False)
+            self.clear_selection_btn.setEnabled(False)
             ocr_hint = ""
             if self.ocr_check.isEnabled() and not self.ocr_check.isChecked():
                 ocr_hint = "，可勾选「扫描件 OCR 识别」后重试"
@@ -186,36 +298,161 @@ class BookmarkPage(QWidget):
         self.status_label.setText(f"共 {self._total_pages} 页 · 识别到 {len(toc)} 条书签，可在下方删改后导出")
         self.export_btn.setEnabled(True)
         self.delete_btn.setEnabled(True)
+        self.select_all_btn.setEnabled(True)
+        self.clear_selection_btn.setEnabled(True)
 
     def _on_fail(self, msg: str):
         self._finish_detect_ui()
         self.export_btn.setEnabled(bool(self._toc))
+        # 失败/取消后必须更新状态文字，否则会一直停留在最后一条进度提示，看起来像卡死
+        self.status_label.setText(msg)
         InfoBar.error("操作失败", msg, parent=self, position=InfoBarPosition.TOP)
 
     def _finish_detect_ui(self):
         self.detect_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
+        self._hide_progress()
+
+    def _hide_progress(self):
         self.progress.setVisible(False)
+        self.ocr_progress_label.setVisible(False)
+        self.ocr_progress.setVisible(False)
+        self.llm_progress_label.setVisible(False)
+        self.llm_progress.setVisible(False)
+
+    def _show_detect_progress(self, use_ocr: bool, use_llm: bool):
+        self._hide_progress()
+        if use_ocr:
+            self.ocr_progress_label.setText("OCR 进度：0/{} 页".format(self._total_pages))
+            self.ocr_progress_label.setVisible(True)
+            self.ocr_progress.setVisible(True)
+            self.ocr_progress.setRange(0, self._total_pages)
+            self.ocr_progress.setValue(0)
+        elif not use_llm:
+            self.progress.setVisible(True)
+            self.progress.setRange(0, self._total_pages)
+            self.progress.setValue(0)
+        if use_llm:
+            self.llm_progress_label.setText("LLM 识别进度：等待 OCR/候选扫描完成")
+            self.llm_progress_label.setVisible(True)
+            self.llm_progress.setVisible(True)
+            self.llm_progress.setRange(0, 1)
+            self.llm_progress.setValue(0)
+
+    def _update_ocr_progress(self, done: int, total: int):
+        self.ocr_progress.setRange(0, total)
+        self.ocr_progress.setValue(done)
+        self.ocr_progress_label.setText(f"OCR 进度：{done}/{total} 页")
+
+    def _update_llm_progress(self, done: int, total: int):
+        self.llm_progress.setRange(0, total)
+        self.llm_progress.setValue(done)
+        self.llm_progress_label.setText(f"LLM 识别进度：{done}/{total}")
 
     # ---- 预览树 ----
-    def _rebuild_tree(self):
-        self.tree.clear()
-        stack: list[tuple[int, QTreeWidgetItem]] = []
-        for idx, item_data in enumerate(self._toc):
-            node = QTreeWidgetItem([item_data["title"], str(item_data["page"] + 1)])
-            node.setData(0, Qt.ItemDataRole.UserRole, idx)
-            node.setToolTip(0, item_data["title"])
-            while stack and stack[-1][0] >= item_data["level"]:
-                stack.pop()
-            if stack:
-                stack[-1][1].addChild(node)
+    def _rebuild_tree(self, checked_indices: set[int] | None = None):
+        checked_indices = checked_indices or set()
+        self.tree.blockSignals(True)
+        try:
+            self.tree.clear()
+            stack: list[tuple[int, QTreeWidgetItem]] = []
+            for idx, item_data in enumerate(self._toc):
+                node = QTreeWidgetItem([
+                    item_data["title"], str(item_data["page"] + 1), str(item_data["level"]),
+                ])
+                node.setData(0, Qt.ItemDataRole.UserRole, idx)
+                node.setCheckState(
+                    0, Qt.CheckState.Checked if idx in checked_indices else Qt.CheckState.Unchecked)
+                node.setFlags(node.flags() | Qt.ItemFlag.ItemIsEditable)
+                node.setToolTip(0, "双击编辑标题；勾选后可批量删除")
+                node.setToolTip(1, "双击编辑页码")
+                node.setToolTip(2, "双击编辑层级（1 到 6）")
+                while stack and stack[-1][0] >= item_data["level"]:
+                    stack.pop()
+                if stack:
+                    stack[-1][1].addChild(node)
+                else:
+                    self.tree.addTopLevelItem(node)
+                stack.append((item_data["level"], node))
+            self.tree.expandAll()
+        finally:
+            self.tree.blockSignals(False)
+
+    def _edit_item(self, item: QTreeWidgetItem, column: int):
+        if column in (0, 1, 2):
+            self.tree.editItem(item, column)
+
+    def _on_item_changed(self, item: QTreeWidgetItem, column: int):
+        idx = item.data(0, Qt.ItemDataRole.UserRole)
+        if idx is None or not 0 <= idx < len(self._toc):
+            return
+        if column == 0:
+            title = item.text(0).strip()
+            if title:
+                self._toc[idx]["title"] = title
             else:
-                self.tree.addTopLevelItem(node)
-            stack.append((item_data["level"], node))
-        self.tree.expandAll()
+                self.tree.blockSignals(True)
+                item.setText(0, self._toc[idx]["title"])
+                self.tree.blockSignals(False)
+                InfoBar.warning("标题不能为空", "请为书签输入标题", parent=self,
+                                position=InfoBarPosition.TOP)
+        elif column == 1:
+            try:
+                page = int(item.text(1).strip())
+            except ValueError:
+                page = 0
+            if 1 <= page <= self._total_pages:
+                self._toc[idx]["page"] = page - 1
+            else:
+                self.tree.blockSignals(True)
+                item.setText(1, str(self._toc[idx]["page"] + 1))
+                self.tree.blockSignals(False)
+                InfoBar.warning("页码无效", f"请输入 1 到 {self._total_pages} 之间的页码",
+                                parent=self, position=InfoBarPosition.TOP)
+        elif column == 2:
+            try:
+                level = int(item.text(2).strip())
+            except ValueError:
+                level = 0
+            if 1 <= level <= self.level_spin.maximum():
+                checked = self._checked_indices()
+                self._toc[idx]["level"] = level
+                self._toc = pdf_service.normalize_toc(self._toc)
+                self._rebuild_tree(checked)
+            else:
+                self.tree.blockSignals(True)
+                item.setText(2, str(self._toc[idx]["level"]))
+                self.tree.blockSignals(False)
+                InfoBar.warning("层级无效", f"请输入 1 到 {self.level_spin.maximum()} 之间的层级",
+                                parent=self, position=InfoBarPosition.TOP)
+
+    def _all_tree_items(self):
+        stack = [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]
+        while stack:
+            item = stack.pop()
+            yield item
+            stack.extend(item.child(i) for i in range(item.childCount()))
+
+    def _set_all_checked(self, checked: bool):
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        self.tree.blockSignals(True)
+        try:
+            for item in self._all_tree_items():
+                item.setCheckState(0, state)
+        finally:
+            self.tree.blockSignals(False)
+
+    def _checked_indices(self) -> set[int]:
+        return {
+            item.data(0, Qt.ItemDataRole.UserRole)
+            for item in self._all_tree_items()
+            if item.checkState(0) == Qt.CheckState.Checked
+        }
 
     def _delete_selected(self):
-        items = self.tree.selectedItems()
+        items = list(self.tree.selectedItems())
+        items.extend(item for item in self._all_tree_items()
+                     if item.checkState(0) == Qt.CheckState.Checked and item not in items)
         if not items:
             return
         to_remove: set[int] = set()
@@ -233,6 +470,8 @@ class BookmarkPage(QWidget):
         has = bool(self._toc)
         self.export_btn.setEnabled(has)
         self.delete_btn.setEnabled(has)
+        self.select_all_btn.setEnabled(has)
+        self.clear_selection_btn.setEnabled(has)
         self.status_label.setText(f"剩余 {len(self._toc)} 条书签")
 
     # ---- 导出 ----
@@ -245,6 +484,7 @@ class BookmarkPage(QWidget):
         if not out_path:
             return
         self.export_btn.setEnabled(False)
+        self._hide_progress()
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)
         self._worker = WriteBookmarksWorker(self._pdf_path, self._toc, out_path, self)
@@ -253,7 +493,7 @@ class BookmarkPage(QWidget):
         self._worker.start()
 
     def _on_exported(self, path: str):
-        self.progress.setVisible(False)
+        self._hide_progress()
         self.export_btn.setEnabled(True)
         InfoBar.success("导出完成", f"已导出：{path}", parent=self,
                         position=InfoBarPosition.TOP, duration=5000)

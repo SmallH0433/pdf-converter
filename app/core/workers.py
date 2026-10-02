@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QThread, Signal
 
-from . import pdf_service
+from . import llm_bookmarks, pdf_service
 
 
 class ConvertImagesWorker(QThread):
@@ -35,8 +35,8 @@ class ConvertImagesWorker(QThread):
                 cancel_check=lambda: self._cancelled,
             )
             self.finished_ok.emit(files)
-        except Exception as e:  # noqa: BLE001 - 透传给界面提示
-            self.failed.emit(str(e))
+        except BaseException as e:  # noqa: BLE001 工作线程里的任何异常都不能无声消失
+            self.failed.emit(str(e) or type(e).__name__)
 
 
 class ExtractPdfWorker(QThread):
@@ -54,20 +54,24 @@ class ExtractPdfWorker(QThread):
         try:
             result = pdf_service.extract_pages_to_pdf(pdf_path, pages, out_path)
             self.finished_ok.emit(result)
-        except Exception as e:  # noqa: BLE001
-            self.failed.emit(str(e))
+        except BaseException as e:  # noqa: BLE001 工作线程里的任何异常都不能无声消失
+            self.failed.emit(str(e) or type(e).__name__)
 
 
 class DetectHeadingsWorker(QThread):
     """扫描 PDF 文本，识别标题候选；use_ocr 时对无文字层的页面先 OCR。"""
 
     progress = Signal(int, int)          # 已扫描页, 总页数
+    ocr_progress = Signal(int, int)      # OCR/页面扫描进度
+    llm_progress = Signal(int, int)      # 本地模型处理阶段进度
     finished_ok = Signal(list)           # [{'level','title','page'}, ...]
     failed = Signal(str)
+    status = Signal(str)
 
-    def __init__(self, pdf_path, mode, max_level, use_ocr=False, parent=None):
+    def __init__(self, pdf_path, mode, max_level, use_ocr=False, parent=None, model_path=None):
         super().__init__(parent)
         self._args = (pdf_path, mode, max_level, use_ocr)
+        self._model_path = model_path
         self._cancelled = False
 
     def cancel(self):
@@ -78,17 +82,31 @@ class DetectHeadingsWorker(QThread):
 
         def on_progress(done, total):
             self.progress.emit(done, total)
+            if use_ocr:
+                self.ocr_progress.emit(done, total)
+            self.msleep(1)
+
+        def on_llm_progress(done, total):
+            self.llm_progress.emit(done, total)
             self.msleep(1)
 
         try:
-            toc = pdf_service.detect_headings(
-                pdf_path, mode, max_level, use_ocr=use_ocr,
-                progress_cb=on_progress,
-                cancel_check=lambda: self._cancelled,
-            )
+            if self._model_path:
+                toc = llm_bookmarks.detect_headings(
+                    pdf_path, self._model_path, max_level=max_level, use_ocr=use_ocr,
+                    progress_cb=on_progress, status_cb=self.status.emit,
+                    cancel_check=lambda: self._cancelled,
+                    llm_progress_cb=on_llm_progress,
+                )
+            else:
+                toc = pdf_service.detect_headings(
+                    pdf_path, mode, max_level, use_ocr=use_ocr,
+                    progress_cb=on_progress,
+                    cancel_check=lambda: self._cancelled,
+                )
             self.finished_ok.emit(toc)
-        except Exception as e:  # noqa: BLE001
-            self.failed.emit(str(e))
+        except BaseException as e:  # noqa: BLE001 工作线程里的任何异常都不能无声消失
+            self.failed.emit(str(e) or type(e).__name__)
 
 
 class OcrPdfWorker(QThread):
@@ -125,8 +143,8 @@ class OcrPdfWorker(QThread):
                 self.cancelled.emit()
             else:
                 self.finished_ok.emit(result)
-        except Exception as e:  # noqa: BLE001
-            self.failed.emit(str(e))
+        except BaseException as e:  # noqa: BLE001 工作线程里的任何异常都不能无声消失
+            self.failed.emit(str(e) or type(e).__name__)
 
 
 class OcrInstallWorker(QThread):
@@ -145,8 +163,8 @@ class OcrInstallWorker(QThread):
         try:
             msg = ocr_service.install_gpu(self._kind, log_cb=self.log.emit)
             self.finished_ok.emit(msg)
-        except Exception as e:  # noqa: BLE001
-            self.failed.emit(str(e))
+        except BaseException as e:  # noqa: BLE001 工作线程里的任何异常都不能无声消失
+            self.failed.emit(str(e) or type(e).__name__)
 
 
 class SearchWorker(QThread):
@@ -179,8 +197,8 @@ class SearchWorker(QThread):
                 cancel_check=lambda: self._cancelled,
             )
             self.finished_ok.emit(hits)
-        except Exception as e:  # noqa: BLE001
-            self.failed.emit(str(e))
+        except BaseException as e:  # noqa: BLE001 工作线程里的任何异常都不能无声消失
+            self.failed.emit(str(e) or type(e).__name__)
 
 
 class WriteBookmarksWorker(QThread):
@@ -198,8 +216,8 @@ class WriteBookmarksWorker(QThread):
         try:
             result = pdf_service.write_bookmarks(pdf_path, toc, out_path)
             self.finished_ok.emit(result)
-        except Exception as e:  # noqa: BLE001
-            self.failed.emit(str(e))
+        except BaseException as e:  # noqa: BLE001 工作线程里的任何异常都不能无声消失
+            self.failed.emit(str(e) or type(e).__name__)
 
 
 class ImagesToPdfWorker(QThread):
@@ -231,8 +249,8 @@ class ImagesToPdfWorker(QThread):
                 cancel_check=lambda: self._cancelled,
             )
             self.finished_ok.emit(result)
-        except Exception as e:  # noqa: BLE001
-            self.failed.emit(str(e))
+        except BaseException as e:  # noqa: BLE001 工作线程里的任何异常都不能无声消失
+            self.failed.emit(str(e) or type(e).__name__)
 
 
 class ThumbnailWorker(QThread):

@@ -23,7 +23,9 @@ if conflicting_ort:
         '检测到与 onnxruntime-gpu 冲突的发行版：' + ', '.join(conflicting_ort)
         + '。请先卸载冲突包并强制重装 requirements.txt 后再打包。')
 
-datas = []
+datas = [
+    ('assets/branding/pdf-converter.ico', 'assets/branding'),
+]
 binaries = []
 hiddenimports = []
 hiddenimports += collect_submodules('pymupdf')
@@ -69,6 +71,15 @@ a.binaries = [
     entry for entry in a.binaries
     if Path(entry[0]).name.lower() not in incompatible_icu
 ]
+# 用户选择的本地 LLM 只保存在 exe 同级 llm_models/，绝不进入分发包。
+def is_local_model(entry):
+    target = Path(entry[0])
+    return (any(part.lower() == 'llm_models' for part in target.parts)
+            or target.name.lower().endswith(('.gguf', '.gguf.part', '.gguf.copying')))
+
+
+a.datas = [entry for entry in a.datas if not is_local_model(entry)]
+a.binaries = [entry for entry in a.binaries if not is_local_model(entry)]
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -87,6 +98,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='assets/branding/pdf-converter.ico',
 )
 coll = COLLECT(
     exe,
