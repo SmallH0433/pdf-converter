@@ -1,4 +1,8 @@
 .venv/
+.tools/
+.uv-cache/
+.pyinstaller-cache/
+PDF转换工具.app/
 build/
 dist/
 installer/

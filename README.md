@@ -1,6 +1,6 @@
 # PDF 转换工具
 
-一个基于 PySide6（Fluent Design）的 Windows 桌面 PDF 工具箱，支持扫描版 PDF 的 OCR 文字识别与多后端 GPU 加速。
+一个基于 PySide6 的跨平台桌面 PDF 工具箱，支持扫描版 PDF 的 OCR 文字识别与多后端 GPU 加速。Windows 使用 Fluent Design，macOS 使用原生窗口与 Apple 风格界面。
 
 ## 功能
 
@@ -15,23 +15,34 @@
 
 ### 本地大模型书签识别（可选）
 
-「书签生成」页可以勾选「使用本地大模型识别书签」，从 LM Studio 已下载完成的 GGUF 模型中选择一个，也可以手动选择其他 GGUF 文件。普通的字号/编号识别仍为默认方式，无需安装大模型。
+「书签生成」页可以勾选「使用本地大模型识别书签」，选择本机已有的 GGUF 模型。应用使用内置 llama.cpp 引擎直接运行模型，无需安装 LM Studio；如果本机已有 LM Studio 模型，应用也会自动发现。普通的字号/编号识别仍为默认方式，无需安装大模型。
 
-首次使用选中的模型时，程序会将它复制到项目根目录（安装后为程序目录）的 `llm_models/`；请为模型预留足够磁盘空间。程序自动读取 LM Studio 设置中的模型目录，并尝试通过硬链接让 LM Studio 从项目副本运行，不再额外复制一份；若无法注册副本，则保留副本并使用 LM Studio 中对应的原模型。软件会尝试启动本机 LM Studio 服务，默认使用 `127.0.0.1:1234`；若服务启用了鉴权，请设置 `LM_STUDIO_API_TOKEN` 环境变量。
+首次使用选中的模型时，程序会保存模型副本；macOS 保存到 `~/Library/Application Support/PDF Converter/llm_models/`，Windows 安装版保存到程序目录的 `llm_models/`。请为模型预留足够磁盘空间。
 
-LLM 只判断从 PDF 提取的候选标题，不自行生成页码或改写文字；识别结果可在导出前检查、删除。扫描件需要同时勾选 OCR。模型文件和下载中的 `.part` 文件均不会进入 Git 或 Windows 安装包。
+LLM 只判断从 PDF 提取的候选标题，不自行生成页码或改写文字；识别结果可在导出前检查、删除。扫描件需要同时勾选 OCR。模型文件和下载中的 `.part` 文件均不会进入 Git 或安装包。
 
 ## 安装
 
-从 [GitHub Releases](https://github.com/SmallH0433/pdf-converter/releases) 下载最新版本。Windows 当前稳定版为 **1.2.16**：
+从 [GitHub Releases](https://github.com/SmallH0433/pdf-converter/releases) 下载最新版本。当前版本为 **1.3.1**：
 
 - Windows 10 / 11：[下载 PDF-Converter-Setup-1.2.16.exe](https://github.com/SmallH0433/pdf-converter/releases/download/v1.2.16/PDF-Converter-Setup-1.2.16.exe)
+- macOS 13+（Apple Silicon）：[下载 PDF-Converter-macOS-arm64-1.3.1.dmg](https://github.com/SmallH0433/pdf-converter/releases/download/v1.3.1/PDF-Converter-macOS-arm64-1.3.1.dmg)
 - Android 8.0+：[下载 PDF-Converter-Android-1.0.1.apk](https://github.com/SmallH0433/pdf-converter/releases/download/v1.2.2/PDF-Converter-Android-1.0.1.apk)
+
+macOS 包目前使用临时签名、尚未经过 Apple 公证；如果系统首次打开时拦截，请在 Finder 中右键应用并选择「打开」。
 
 - 无需 Python 环境，无需管理员权限（安装到用户目录）
 - 支持 Windows 10 / 11（64 位）；Windows 10 建议 21H2 及以上
 - 自带卸载程序，注册到 Windows「应用和功能」
 - 安装新版本时自动识别并沿用旧版安装目录，覆盖旧程序文件，保留已下载的 GPU 加速包
+
+### 1.3.1 更新内容
+
+- 新增 macOS 13+ Apple Silicon 独立安装包
+- macOS 使用原生标题栏、菜单栏、系统字体和 Apple 风格侧边栏，并跟随系统深色/浅色外观
+- macOS OCR 使用 ONNX Runtime CoreML Provider，支持 Apple 芯片加速
+- macOS 安装包内置 llama.cpp Metal ARM64 运行时，本地 GGUF 模型无需 LM Studio
+- 新增 `⌘O` 打开 PDF 与 `⌃⌘S` 显示/隐藏侧边栏快捷键
 
 ### 1.2.16 更新内容
 
@@ -167,6 +178,22 @@ python -m venv .venv
 ```
 
 或直接双击 `启动.bat`。
+
+### macOS（Apple Silicon）
+
+项目已适配 macOS ARM：依赖清单会自动使用官方 `onnxruntime` 的 CoreML Provider，不安装 Windows/Linux 专用的 GPU 发行版。源码环境配置完成后运行：
+
+```bash
+.venv/bin/python run.py
+```
+
+首次部署所需的 ARM 原生 Python、虚拟环境和依赖均保存在项目目录内，不修改系统 Python。
+
+生成独立的 `.app`、`.dmg` 与 `.zip` 发布包：
+
+```bash
+./macos/build_release.sh
+```
 
 ## 打包
 

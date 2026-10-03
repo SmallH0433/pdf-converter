@@ -28,8 +28,15 @@ def runtime_dir() -> Path:
     """安装后存 exe 同级 _internal/llama；源码运行存项目根目录 _llama/runtime。"""
     if getattr(sys, "frozen", False):
         base = Path(sys.executable).resolve().parent
-        for cand in (base / "_internal" / "llama", base / "llama"):
-            if (cand / "llama-server.exe").is_file():
+        frozen_root = Path(getattr(sys, "_MEIPASS", base))
+        for cand in (
+            frozen_root / "llama",
+            base.parent / "Resources" / "llama",
+            base / "_internal" / "llama",
+            base / "llama",
+        ):
+            if (cand / "llama-server.exe").is_file() or \
+                    (cand / "llama-server").is_file():
                 return cand
     return Path(__file__).resolve().parents[2] / "_llama" / "runtime"
 

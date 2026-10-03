@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication
 from qfluentwidgets import FluentTranslator, setTheme, Theme
 
 from app.main_window import MainWindow
+from app.macos_ui import configure_application
 
 
 def resource_path(*parts: str) -> Path:
@@ -23,6 +24,7 @@ def main():
     )
     app.installTranslator(FluentTranslator())
     setTheme(Theme.AUTO)
+    configure_application(app)
 
     window = MainWindow()
     window.setWindowIcon(app.windowIcon())

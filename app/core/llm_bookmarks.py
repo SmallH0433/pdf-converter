@@ -25,6 +25,9 @@ RETRY_OUTPUT_TOKENS = 12288
 
 def model_store_dir() -> Path:
     """源码运行存项目根目录；安装后存 exe 同级的可写目录。"""
+    if getattr(sys, "frozen", False) and sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / \
+            "PDF Converter" / "llm_models"
     base = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[2]
     return base / "llm_models"
 

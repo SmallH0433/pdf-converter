@@ -1,6 +1,8 @@
 """首页：功能入口与使用说明。"""
 from __future__ import annotations
 
+import platform
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 
@@ -17,7 +19,11 @@ from qfluentwidgets import (
     PrimaryPushButton,
     PushButton,
     StrongBodyLabel,
+    TitleLabel,
 )
+
+
+IS_MACOS = platform.system() == "Darwin"
 
 
 class FeatureCard(CardWidget):
@@ -26,11 +32,15 @@ class FeatureCard(CardWidget):
     def __init__(self, icon, title: str, desc: str, parent=None):
         super().__init__(parent)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedSize(232, 150)  # 固定尺寸，供 FlowLayout 按宽度自动换行
+        self.setObjectName("featureCard")
+        self.setBorderRadius(12 if IS_MACOS else 8)
+        self.setFixedSize(250 if IS_MACOS else 232, 142 if IS_MACOS else 150)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setContentsMargins(18 if IS_MACOS else 20, 16 if IS_MACOS else 18,
+                                  18 if IS_MACOS else 20, 16 if IS_MACOS else 18)
+        layout.setSpacing(7 if IS_MACOS else 6)
         icon_widget = IconWidget(icon, self)
-        icon_widget.setFixedSize(34, 34)
+        icon_widget.setFixedSize(30 if IS_MACOS else 34, 30 if IS_MACOS else 34)
         layout.addWidget(icon_widget)
         layout.addWidget(StrongBodyLabel(title, self))
         desc_label = CaptionLabel(desc, self)
@@ -51,10 +61,13 @@ class HomePage(QWidget):
         self.setObjectName("homePage")
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(36, 28, 36, 28)
-        layout.setSpacing(16)
+        layout.setContentsMargins(32 if IS_MACOS else 36, 28, 32 if IS_MACOS else 36, 28)
+        layout.setSpacing(14 if IS_MACOS else 16)
 
-        layout.addWidget(DisplayLabel("PDF 转换工具", self))
+        heading = TitleLabel("PDF 转换工具", self) if IS_MACOS \
+            else DisplayLabel("PDF 转换工具", self)
+        heading.setObjectName("homeTitle")
+        layout.addWidget(heading)
         intro = BodyLabel(
             "将 PDF 转换为 PNG / JPG 等主流图片格式，节选其中几页导出，"
             "根据内容自动生成书签，或将多张图片合成为 PDF。",
@@ -67,7 +80,7 @@ class HomePage(QWidget):
         card_area = QWidget(self)
         flow = FlowLayout(card_area, needAni=False)
         flow.setContentsMargins(0, 0, 0, 0)
-        flow.setSpacing(14)
+        flow.setSpacing(12 if IS_MACOS else 14)
         card1 = FeatureCard(
             FIF.PHOTO, "PDF 转图片",
             "支持 PNG / JPG / WEBP / BMP / TIFF，自定义 DPI 与页码范围，可打包为 ZIP。", card_area)

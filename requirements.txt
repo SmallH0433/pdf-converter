@@ -4,7 +4,8 @@ PySide6-Fluent-Widgets>=1.7
 # 2.0.6+ 不再强制依赖 CPU 版 onnxruntime，避免与 onnxruntime-gpu 覆盖同一包目录。
 # 不要同时安装旧版 rapidocr-onnxruntime；它会拉入 CPU 版 onnxruntime 并覆盖 GPU DLL。
 rapidocr==3.9.2
-onnxruntime-gpu==1.22.0  # 缺 CUDA 运行库时自动退回 CPU 推理
+onnxruntime-gpu==1.22.0; platform_system != "Darwin"  # Windows/Linux：缺 CUDA 运行库时自动退回 CPU 推理
+onnxruntime==1.22.0; platform_system == "Darwin"  # macOS ARM/Intel：官方包内置 CoreML Provider
 # GPU 加速（可选，应用内「PDF OCR」页一键安装，按显卡自动选择）：
 # NVIDIA → nvidia-cuda-runtime-cu12 nvidia-cudnn-cu12 nvidia-cublas-cu12 nvidia-cufft-cu12
 # AMD/Intel/高通（Win10+）→ --no-deps onnxruntime-directml==1.22.0
