@@ -32,45 +32,74 @@ from qfluentwidgets import (
     setTheme,
 )
 
+import importlib
+
 from .macos_ui import IS_MACOS
-from .pages.bookmark_page import BookmarkPage
-from .pages.convert_page import ConvertPage
-from .pages.extract_page import ExtractPage
-from .pages.home_page import HomePage
-from .pages.img2pdf_page import Img2PdfPage
-from .pages.ocr_page import OcrPage
-from .pages.reader_page import ReaderPage
 
-
+# 页面类延迟导入：启动时只实例化首页，其余页面首次进入时才创建，
+# 避免阅读器/OCR/书签等重依赖（PyMuPDF、numpy 等）拖慢启动。
 PAGE_SPECS = (
-    ("homePage", "home_page", HomePage, FIF.HOME, "首页"),
-    ("readerPage", "reader_page", ReaderPage, FIF.DOCUMENT, "阅读器"),
-    ("convertPage", "convert_page", ConvertPage, FIF.PHOTO, "PDF 转图片"),
-    ("extractPage", "extract_page", ExtractPage, FIF.CUT, "页码节选"),
-    ("bookmarkPage", "bookmark_page", BookmarkPage, FIF.TAG, "书签生成"),
-    ("img2pdfPage", "img2pdf_page", Img2PdfPage, FIF.ALBUM, "图片转 PDF"),
-    ("ocrPage", "ocr_page", OcrPage, FIF.SEARCH, "PDF OCR"),
+    ("homePage", "home_page", "app.pages.home_page:HomePage", FIF.HOME, "首页", True),
+    ("readerPage", "reader_page", "app.pages.reader_page:ReaderPage", FIF.DOCUMENT, "阅读器", False),
+    ("convertPage", "convert_page", "app.pages.convert_page:ConvertPage", FIF.PHOTO, "PDF 转图片", False),
+    ("extractPage", "extract_page", "app.pages.extract_page:ExtractPage", FIF.CUT, "页码节选", False),
+    ("bookmarkPage", "bookmark_page", "app.pages.bookmark_page:BookmarkPage", FIF.TAG, "目录/书签自动生成", False),
+    ("img2pdfPage", "img2pdf_page", "app.pages.img2pdf_page:Img2PdfPage", FIF.ALBUM, "图片转 PDF", False),
+    ("ocrPage", "ocr_page", "app.pages.ocr_page:OcrPage", FIF.SEARCH, "PDF OCR", False),
 )
 
 
-def _create_pages(window):
-    for _route, attribute, page_type, _icon, _title in PAGE_SPECS:
-        setattr(window, attribute, page_type(window))
+def _lazy_page(window, stack, row_or_widget):  # noqa: C901
+    """占位页首次显示时，把真实页面创建为它的子控件（占位壳不动，导航映射不失效）。"""
+    if isinstance(row_or_widget, int):
+        index = row_or_widget
+    else:
+        index = stack.indexOf(row_or_widget)
+    if index < 0 or index >= len(PAGE_SPECS):
+        return
+    _route, attribute, spec, _icon, _title, eager = PAGE_SPECS[index]
+    if eager:
+        return
+    shell = stack.widget(index)
+    if shell is None or shell.layout() is not None:
+        return
+    module_name, class_name = spec.split(":")
+    page_type = getattr(importlib.import_module(module_name), class_name)
+    page = page_type(window)
+    setattr(window, attribute, page)
+    layout = QVBoxLayout(shell)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.addWidget(page)
+    if hasattr(window, "_polish_page"):
+        window._polish_page(page)
 
 
-def _route_widget(window, route_key: str):
-    for route, attribute, _page_type, _icon, _title in PAGE_SPECS:
-        if route == route_key:
-            return getattr(window, attribute)
-    return None
+def _create_pages(window, stack=None):
+    """首页立即创建；其余页面用占位 widget 顶替，首次进入时才真正实例化。"""
+    window._page_shells = {}
+    for _route, attribute, _spec, _icon, _title, eager in PAGE_SPECS:
+        if eager:
+            module_name, class_name = _spec.split(":")
+            page_type = getattr(importlib.import_module(module_name), class_name)
+            setattr(window, attribute, page_type(window))
+        else:
+            # 占位壳沿用页面的 objectName，导航 routeKey 保持有效
+            placeholder = QWidget()
+            placeholder.setObjectName(_route)
+            setattr(window, attribute, placeholder)
+            window._page_shells[attribute] = placeholder
 
 
 def _handle_close(window, event):
-    if window.reader_page.confirm_discard():
-        window.reader_page.stop_workers()
-        event.accept()
+    reader = window.reader_page
+    if hasattr(reader, "confirm_discard"):
+        if reader.confirm_discard():
+            reader.stop_workers()
+            event.accept()
+        else:
+            event.ignore()
     else:
-        event.ignore()
+        event.accept()
 
 
 class FluentMainWindow(FluentWindow):
@@ -80,14 +109,10 @@ class FluentMainWindow(FluentWindow):
         self.resize(1080, 760)
 
         _create_pages(self)
-
-        self.addSubInterface(self.home_page, FIF.HOME, "首页")
-        self.addSubInterface(self.reader_page, FIF.DOCUMENT, "阅读器")
-        self.addSubInterface(self.convert_page, FIF.PHOTO, "PDF 转图片")
-        self.addSubInterface(self.extract_page, FIF.CUT, "页码节选")
-        self.addSubInterface(self.bookmark_page, FIF.TAG, "书签生成")
-        self.addSubInterface(self.img2pdf_page, FIF.ALBUM, "图片转 PDF")
-        self.addSubInterface(self.ocr_page, FIF.SEARCH, "PDF OCR")
+        for _route, attribute, _spec, icon, title, _eager in PAGE_SPECS:
+            self.addSubInterface(getattr(self, attribute), icon, title)
+        self.stackedWidget.currentChanged.connect(
+            lambda index: _lazy_page(self, self.stackedWidget, index))
 
         self.navigationInterface.addItem(
             routeKey="themeToggle",
@@ -102,9 +127,12 @@ class FluentMainWindow(FluentWindow):
         self.stackedWidget.setCurrentWidget(self.home_page)
 
     def _navigate(self, route_key: str):
-        widget = _route_widget(self, route_key)
-        if widget:
-            self.switchTo(widget)
+        for row, (route, attribute, _s, _i, _t, _e) in enumerate(PAGE_SPECS):
+            if route == route_key:
+                _lazy_page(self, self.stackedWidget, row)
+                # 导航永远切换到占位壳（首次切换时壳内已填充真实页面）
+                self.switchTo(self._page_shells.get(attribute, getattr(self, attribute)))
+                return
 
     @staticmethod
     def _toggle_theme():
@@ -115,7 +143,9 @@ class FluentMainWindow(FluentWindow):
 
     def open_pdf_in_reader(self, path: str):
         """从「打开方式」等外部入口打开 PDF：切到阅读器并加载。"""
-        self.switchTo(self.reader_page)
+        row = next(i for i, s in enumerate(PAGE_SPECS) if s[0] == "readerPage")
+        _lazy_page(self, self.stackedWidget, row)
+        self.switchTo(self._page_shells["reader_page"])
         self.reader_page.load_pdf(path)
 
 
@@ -131,7 +161,6 @@ class MacMainWindow(QMainWindow):
         self.setUnifiedTitleAndToolBarOnMac(True)
 
         _create_pages(self)
-        self._pages = [getattr(self, spec[1]) for spec in PAGE_SPECS]
 
         central = QWidget(self)
         central.setObjectName("macCentralWidget")
@@ -173,8 +202,8 @@ class MacMainWindow(QMainWindow):
 
         self.content_stack = QStackedWidget(central)
         self.content_stack.setObjectName("macContentStack")
-        for page in self._pages:
-            self.content_stack.addWidget(page)
+        for _route, attribute, _spec, _icon, _title, _eager in PAGE_SPECS:
+            self.content_stack.addWidget(getattr(self, attribute))
 
         root.addWidget(self.sidebar)
         root.addWidget(self.content_stack, 1)
@@ -210,16 +239,17 @@ class MacMainWindow(QMainWindow):
         view_menu.addAction(self.sidebar_action)
 
     def _polish_pages(self):
-        for page in self._pages:
-            layout = page.layout()
-            if layout is not None and page is not self.home_page:
-                layout.setContentsMargins(30, 24, 30, 28)
-                layout.setSpacing(12)
-            for card in page.findChildren(CardWidget):
-                card.setBorderRadius(12)
+        self._polish_page(self.home_page)
 
-        for page in (self.convert_page, self.extract_page, self.bookmark_page,
-                     self.img2pdf_page, self.ocr_page):
+    def _polish_page(self, page):
+        """对单个真实页面套用 macOS 外观（占位页跳过；懒加载页面在创建时调用）。"""
+        layout = page.layout()
+        if layout is not None and page is not self.home_page:
+            layout.setContentsMargins(30, 24, 30, 28)
+            layout.setSpacing(12)
+        for card in page.findChildren(CardWidget):
+            card.setBorderRadius(12)
+        if page is not self.home_page:
             labels = page.findChildren(StrongBodyLabel)
             if labels:
                 labels[0].setObjectName("macPageTitle")
@@ -286,6 +316,7 @@ class MacMainWindow(QMainWindow):
 
     def _show_page(self, row: int):
         if 0 <= row < self.content_stack.count():
+            _lazy_page(self, self.content_stack, row)
             self.content_stack.setCurrentIndex(row)
 
     def _navigate(self, route_key: str):
@@ -303,6 +334,8 @@ class MacMainWindow(QMainWindow):
         _handle_close(self, event)
 
     def open_pdf_in_reader(self, path: str):
+        row = next(i for i, s in enumerate(PAGE_SPECS) if s[0] == "readerPage")
+        _lazy_page(self, self.content_stack, row)
         self._navigate("readerPage")
         self.reader_page.load_pdf(path)
 

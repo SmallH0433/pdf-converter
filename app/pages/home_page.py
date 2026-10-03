@@ -88,7 +88,7 @@ class HomePage(QWidget):
             FIF.CUT, "页码节选",
             "勾选缩略图、输入页码范围或按目录章节快速选择，导出为新 PDF 或图片。", card_area)
         card3 = FeatureCard(
-            FIF.TAG, "书签生成",
+            FIF.TAG, "目录/书签自动生成",
             "根据标题字号、粗体和章节编号自动识别书签，可预览删改后导出。", card_area)
         card4 = FeatureCard(
             FIF.ALBUM, "图片转 PDF",

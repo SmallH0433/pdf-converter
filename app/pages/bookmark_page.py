@@ -1,7 +1,8 @@
-"""书签生成页面：根据 PDF 内容自动识别标题，生成书签并导出。"""
+"""目录/书签自动生成页面：根据 PDF 内容自动识别标题，生成目录书签并导出。"""
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -24,6 +25,7 @@ from qfluentwidgets import (
     InfoBar,
     InfoBarPosition,
     LineEdit,
+    MessageBox,
     MessageBoxBase,
     PrimaryPushButton,
     ProgressBar,
@@ -33,8 +35,8 @@ from qfluentwidgets import (
     SubtitleLabel,
 )
 
-from ..core import llm_bookmarks, ocr_service, pdf_service
-from ..core.workers import DetectHeadingsWorker, WriteBookmarksWorker
+from ..core import llm_bookmarks, llm_download, ocr_service, pdf_service
+from ..core.workers import DetectHeadingsWorker, DownloadModelWorker, WriteBookmarksWorker
 from .widgets import DropCard
 
 MODES = [
@@ -92,12 +94,13 @@ class BookmarkPage(QWidget):
         self._total_pages = 0
         self._toc: list[dict] = []
         self._worker = None
+        self._dl_worker = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(36, 24, 36, 24)
         root.setSpacing(14)
 
-        root.addWidget(StrongBodyLabel("书签生成", self))
+        root.addWidget(StrongBodyLabel("目录/书签自动生成", self))
         hint = CaptionLabel(
             "根据标题的字号、粗体和章节编号（如 第1章 / Chapter 2 / 1.3）自动识别书签，"
             "会自动过滤页眉页脚；导出时会替换 PDF 原有书签。", self)
@@ -149,14 +152,32 @@ class BookmarkPage(QWidget):
         self.model_refresh_btn.clicked.connect(self._refresh_models)
         self.model_refresh_btn.setEnabled(False)
         llm_row.addWidget(self.model_refresh_btn)
-        self.model_browse_btn = PushButton("选择 GGUF…", self)
+        self.model_browse_btn = PushButton("自选 GGUF…", self)
         self.model_browse_btn.clicked.connect(self._browse_model)
         self.model_browse_btn.setEnabled(False)
         llm_row.addWidget(self.model_browse_btn)
+        self.model_download_btn = PrimaryPushButton("一键下载推荐模型", self)
+        self.model_download_btn.setToolTip(
+            f"{llm_download.RECOMMENDED_REPO}（{llm_download.RECOMMENDED_FILE}，约 2.6 GB）")
+        self.model_download_btn.clicked.connect(self._download_model)
+        self.model_download_btn.setEnabled(False)
+        llm_row.addWidget(self.model_download_btn)
         llm_layout.addLayout(llm_row)
+        # 模型下载进度（默认隐藏）
+        self.dl_row = QHBoxLayout()
+        self.dl_status = CaptionLabel("", self)
+        self.dl_row.addWidget(self.dl_status, 1)
+        self.dl_progress = ProgressBar(self)
+        self.dl_progress.setMinimumWidth(220)
+        self.dl_row.addWidget(self.dl_progress)
+        self.dl_cancel_btn = PushButton("取消下载", self)
+        self.dl_cancel_btn.clicked.connect(self._cancel_download)
+        self.dl_row.addWidget(self.dl_cancel_btn)
+        llm_layout.addLayout(self.dl_row)
+        self._set_download_ui_visible(False)
         llm_hint = CaptionLabel(
-            "模型由应用内置的 llama.cpp 引擎直接加载（有 Vulkan 显卡则自动使用 GPU），"
-            "无需安装 LM Studio；模型不包含在安装包中。仅支持已下载完成的 GGUF 主模型。", self)
+            "模型由应用内置的 llama.cpp 引擎直接加载（有显卡则自动使用 GPU），无需安装 LM Studio。"
+            "推荐 Qwen3.8-4B-Distill，可点「一键下载推荐模型」自动获取；也可自选本机 GGUF 模型。", self)
         llm_hint.setWordWrap(True)
         llm_layout.addWidget(llm_hint)
         root.addWidget(llm_card)
@@ -244,18 +265,88 @@ class BookmarkPage(QWidget):
         self.model_refresh_btn.setEnabled(enabled)
         self.model_browse_btn.setEnabled(enabled)
         self.mode_combo.setEnabled(not enabled)
+        self._update_download_btn()
+
+    def _update_download_btn(self):
+        has_recommended = any(
+            llm_download.is_recommended(Path(self.model_combo.itemData(i)))
+            for i in range(self.model_combo.count()) if self.model_combo.itemData(i))
+        self.model_download_btn.setEnabled(
+            self.llm_check.isChecked() and not has_recommended
+            and not (self._dl_worker and self._dl_worker.isRunning()))
+        self.model_download_btn.setVisible(not has_recommended)
+
+    def _set_download_ui_visible(self, visible: bool):
+        self.dl_status.setVisible(visible)
+        self.dl_progress.setVisible(visible)
+        self.dl_cancel_btn.setVisible(visible)
+
+    def _download_model(self):
+        if self._dl_worker and self._dl_worker.isRunning():
+            return
+        dest = llm_download.recommended_path(llm_bookmarks.model_store_dir()).parent
+        self._set_download_ui_visible(True)
+        self.dl_progress.setRange(0, 100)
+        self.dl_progress.setValue(0)
+        self.dl_status.setText("正在下载推荐模型…")
+        self.model_download_btn.setEnabled(False)
+        self._dl_worker = DownloadModelWorker(dest, self)
+        self._dl_worker.progress.connect(self._on_download_progress)
+        self._dl_worker.status.connect(self.dl_status.setText)
+        self._dl_worker.finished_ok.connect(self._on_downloaded)
+        self._dl_worker.failed.connect(self._on_download_failed)
+        self._dl_worker.start()
+
+    def _cancel_download(self):
+        if self._dl_worker:
+            self._dl_worker.cancel()
+
+    def _on_download_progress(self, done: int, total: int):
+        if total > 0:
+            self.dl_progress.setRange(0, total)
+            self.dl_progress.setValue(done)
+            self.dl_status.setText(
+                f"正在下载推荐模型：{done / 2**30:.2f} / {total / 2**30:.2f} GB")
+        else:
+            self.dl_status.setText(f"正在下载推荐模型：{done / 2**30:.2f} GB")
+
+    def _on_downloaded(self, path: str):
+        self._set_download_ui_visible(False)
+        self._refresh_models()
+        for i in range(self.model_combo.count()):
+            if self.model_combo.itemData(i) == path:
+                self.model_combo.setCurrentIndex(i)
+                break
+        InfoBar.success("下载完成", "推荐模型已就绪，可直接开始识别", parent=self,
+                        position=InfoBarPosition.TOP)
+        self._update_download_btn()
+
+    def _on_download_failed(self, msg: str):
+        self._set_download_ui_visible(False)
+        self._update_download_btn()
+        InfoBar.error("模型下载失败", msg, parent=self, position=InfoBarPosition.TOP)
 
     def _refresh_models(self):
         previous = self.model_combo.currentData()
         self.model_combo.clear()
         models = llm_bookmarks.list_local_models()
+        recommended_idx = -1
         for path in models:
             size_gb = path.stat().st_size / (1024 ** 3)
-            self.model_combo.addItem(f"{path.name} · {size_gb:.1f} GB", userData=str(path))
+            label = f"{path.name} · {size_gb:.1f} GB"
+            if llm_download.is_recommended(path):
+                label = f"{llm_download.RECOMMENDED_LABEL} · {size_gb:.1f} GB"
+                recommended_idx = self.model_combo.count()
+            self.model_combo.addItem(label, userData=str(path))
         for index in range(self.model_combo.count()):
             if self.model_combo.itemData(index) == previous:
                 self.model_combo.setCurrentIndex(index)
                 break
+        else:
+            # 默认选中推荐模型，没有则选第一个
+            if recommended_idx >= 0:
+                self.model_combo.setCurrentIndex(recommended_idx)
+        self._update_download_btn()
 
     def _browse_model(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -310,6 +401,7 @@ class BookmarkPage(QWidget):
         self.add_btn.setEnabled(False)
         self.export_btn.setEnabled(False)
         use_ocr = self.ocr_check.isChecked()
+        self._last_use_ocr = use_ocr
         use_llm = bool(model_path)
         self._show_detect_progress(use_ocr, use_llm)
         self._worker = DetectHeadingsWorker(
@@ -337,6 +429,20 @@ class BookmarkPage(QWidget):
             self.delete_btn.setEnabled(False)
             self.select_all_btn.setEnabled(False)
             self.clear_selection_btn.setEnabled(False)
+            # 无文字层的扫描件：弹窗询问是否启用 OCR 重试
+            ocr_ok, _ = ocr_service.ocr_available()
+            if (not getattr(self, "_last_use_ocr", False) and ocr_ok
+                    and self._pdf_path and not pdf_service.has_text_layer(self._pdf_path)):
+                box = MessageBox(
+                    "未识别到文字",
+                    "未能从该 PDF 提取到文字，可能是扫描件。是否启用 OCR 重新识别？（较慢）",
+                    self)
+                box.yesButton.setText("启用 OCR 重试")
+                box.cancelButton.setText("取消")
+                if box.exec():
+                    self.ocr_check.setChecked(True)
+                    self._start_detect()
+                    return
             ocr_hint = ""
             if self.ocr_check.isEnabled() and not self.ocr_check.isChecked():
                 ocr_hint = "，可勾选「扫描件 OCR 识别」后重试"

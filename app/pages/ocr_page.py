@@ -38,7 +38,7 @@ class OcrPage(QWidget):
         root.addWidget(StrongBodyLabel("PDF OCR 文字识别", self))
         hint = CaptionLabel(
             "为扫描版 PDF 添加隐形文字层（页面外观不变），识别后文字可搜索、可复制，"
-            "「书签生成」等功能也能正常读取。已有文字的页面会自动跳过。", self)
+            "「目录/书签自动生成」等功能也能正常读取。已有文字的页面会自动跳过。", self)
         hint.setWordWrap(True)
         root.addWidget(hint)
 
@@ -60,7 +60,7 @@ class OcrPage(QWidget):
         engine_col.addLayout(self.accel_btn_row)
         root.addWidget(self.engine_card)
 
-        # 是否识别批注/留言（默认不识别，与「书签生成」的 OCR 行为一致）
+        # 是否识别批注/留言（默认不识别，与「目录/书签自动生成」的 OCR 行为一致）
         self.annots_check = CheckBox(
             "识别页面上的批注与留言（手写批注墨迹一并识别，留言文字写入文字层）", self)
         root.addWidget(self.annots_check)

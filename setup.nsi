@@ -4,7 +4,7 @@
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
 
-!define APP_VERSION "1.3.1"
+!define APP_VERSION "1.3.2"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\PDF转换工具"
 
 Name "PDF转换工具"

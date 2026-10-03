@@ -61,6 +61,18 @@ def open_pdf(path: str) -> fitz.Document:
     return fitz.open(path)
 
 
+def has_text_layer(pdf_path: str, sample_pages: int = 8) -> bool:
+    """抽样检查 PDF 是否有可提取的文字层（扫描件没有）。"""
+    doc = fitz.open(pdf_path)
+    try:
+        for i in range(min(doc.page_count, sample_pages)):
+            if doc.load_page(i).get_text("text").strip():
+                return True
+        return False
+    finally:
+        doc.close()
+
+
 def render_page(doc: fitz.Document, page_index: int, dpi: int) -> fitz.Pixmap:
     page = doc.load_page(page_index)
     zoom = dpi / 72.0

@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"
 PROJECT_DIR="${SCRIPT_DIR:h}"
-VERSION="1.3.1"
+VERSION="1.3.2"
 APP_NAME="PDF转换工具.app"
 DMG_NAME="PDF-Converter-macOS-arm64-${VERSION}.dmg"
 ZIP_NAME="PDF-Converter-macOS-arm64-${VERSION}.zip"

@@ -220,6 +220,36 @@ class WriteBookmarksWorker(QThread):
             self.failed.emit(str(e) or type(e).__name__)
 
 
+class DownloadModelWorker(QThread):
+    """一键下载推荐模型（Qwen3.8-4B-Distill-GGUF，默认走 hf-mirror）。"""
+
+    progress = Signal(int, int)          # 已下载字节, 总字节（0 表示未知）
+    status = Signal(str)
+    finished_ok = Signal(str)            # 模型路径
+    failed = Signal(str)
+
+    def __init__(self, dest_dir, parent=None):
+        super().__init__(parent)
+        self._dest_dir = dest_dir
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        from . import llm_download
+        try:
+            path = llm_download.download_recommended(
+                self._dest_dir,
+                progress_cb=self.progress.emit,
+                cancel_check=lambda: self._cancelled,
+                status_cb=self.status.emit,
+            )
+            self.finished_ok.emit(str(path))
+        except BaseException as e:  # noqa: BLE001
+            self.failed.emit(str(e) or type(e).__name__)
+
+
 class ImagesToPdfWorker(QThread):
     """多张图片 → 单个 PDF。"""
 
