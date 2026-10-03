@@ -26,6 +26,8 @@ if conflicting_ort:
 datas = [
     ('assets/branding/pdf-converter.ico', 'assets/branding'),
 ]
+# 内置 llama.cpp 推理运行时（llama-server，Vulkan 构建，GPU 可用即用、否则 CPU）
+datas += [('_llama/runtime', 'llama')]
 binaries = []
 hiddenimports = []
 hiddenimports += collect_submodules('pymupdf')

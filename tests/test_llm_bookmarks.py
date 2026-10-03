@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import fitz
 
-from app.core import llm_bookmarks
+from app.core import llm_bookmarks, llm_engine
 
 
 def _patch_pipeline_steps():
@@ -75,19 +75,19 @@ class LlmBookmarkTests(unittest.TestCase):
             doc = fitz.open()
             page = doc.new_page()
             page.insert_text((40, 80), "Section 1.2 Applications", fontsize=14)
-            page.insert_text((40, 120), "VTH = VDD - 2V", fontsize=20)
+            page.insert_text((40, 120), "VTH Threshold Voltage", fontsize=20)
             page.insert_text((40, 170), "This is a paragraph of normal body text for font sizing.", fontsize=10)
             doc.save(path)
             doc.close()
             candidates = llm_bookmarks._extract_candidates(str(path), False)
             self.assertIn("Section 1.2 Applications", [r["text"] for r in candidates])
-            self.assertIn("VTH = VDD - 2V", [r["text"] for r in candidates])
+            self.assertIn("VTH Threshold Voltage", [r["text"] for r in candidates])
             title_id = next(r["id"] for r in candidates if r["text"] == "Section 1.2 Applications")
             reply = {"output": [{"type": "message", "content":
                                   f'{{"headings":[{{"id":{title_id},"level":2}},{{"id":999,"level":1}}]}}'}]}
             steps = _patch_pipeline_steps()
-            with patch.object(llm_bookmarks, "copy_model_to_project", return_value=Path("sample.gguf")), \
-                 patch.object(llm_bookmarks, "_import_copied_model", return_value="sample"), \
+            with patch.object(llm_engine, "validate_model", side_effect=lambda p: Path(p)), \
+                 patch.object(llm_engine, "ensure_running"), \
                  patch.object(llm_bookmarks, "_ensure_server"), \
                  steps[0], steps[1], steps[2], \
                  patch.object(llm_bookmarks, "_json_request", return_value=reply):
@@ -118,8 +118,8 @@ class LlmBookmarkTests(unittest.TestCase):
             updates = []
             steps = _patch_pipeline_steps()
             reply = {"output": [{"type": "message", "content": '{"headings":[]}'}]}
-            with patch.object(llm_bookmarks, "copy_model_to_project", return_value=Path("sample.gguf")), \
-                 patch.object(llm_bookmarks, "_import_copied_model", return_value="sample"), \
+            with patch.object(llm_engine, "validate_model", side_effect=lambda p: Path(p)), \
+                 patch.object(llm_engine, "ensure_running"), \
                  patch.object(llm_bookmarks, "_ensure_server"), \
                  steps[0], steps[1], steps[2], \
                  patch.object(llm_bookmarks, "_json_request", return_value=reply):
@@ -151,8 +151,8 @@ class LlmBookmarkTests(unittest.TestCase):
                 requests.append(body)
                 return truncated if len(requests) == 1 else valid
             steps = _patch_pipeline_steps()
-            with patch.object(llm_bookmarks, "copy_model_to_project", return_value=Path("sample.gguf")), \
-                 patch.object(llm_bookmarks, "_import_copied_model", return_value="sample"), \
+            with patch.object(llm_engine, "validate_model", side_effect=lambda p: Path(p)), \
+                 patch.object(llm_engine, "ensure_running"), \
                  patch.object(llm_bookmarks, "_ensure_server"), \
                  steps[0], steps[1], steps[2], \
                  patch.object(llm_bookmarks, "_json_request", side_effect=fake_request):
@@ -279,8 +279,8 @@ class LlmBookmarkTests(unittest.TestCase):
             reply = {"output": [{"type": "message", "content":
                                   f'{{"headings":[{{"id":{chapter_id},"level":2}},{{"id":{section_id},"level":3}}]}}'}]}
             steps = _patch_pipeline_steps()
-            with patch.object(llm_bookmarks, "copy_model_to_project", return_value=Path("sample.gguf")), \
-                 patch.object(llm_bookmarks, "_import_copied_model", return_value="sample"), \
+            with patch.object(llm_engine, "validate_model", side_effect=lambda p: Path(p)), \
+                 patch.object(llm_engine, "ensure_running"), \
                  patch.object(llm_bookmarks, "_ensure_server"), \
                  steps[0], steps[1], steps[2], \
                  patch.object(llm_bookmarks, "_json_request", return_value=reply):
@@ -301,8 +301,8 @@ class LlmBookmarkTests(unittest.TestCase):
                 captured.append(body)
                 return {"output": [{"type": "message", "content": '{"headings":[]}'}]}
             steps = _patch_pipeline_steps()
-            with patch.object(llm_bookmarks, "copy_model_to_project", return_value=Path("sample.gguf")), \
-                 patch.object(llm_bookmarks, "_import_copied_model", return_value="sample"), \
+            with patch.object(llm_engine, "validate_model", side_effect=lambda p: Path(p)), \
+                 patch.object(llm_engine, "ensure_running"), \
                  patch.object(llm_bookmarks, "_ensure_server"), \
                  steps[0], steps[1], steps[2], \
                  patch.object(llm_bookmarks, "_json_request", side_effect=fake_request):
@@ -380,8 +380,8 @@ class LlmBookmarkTests(unittest.TestCase):
                     raise fail500
                 return valid
             steps = _patch_pipeline_steps()
-            with patch.object(llm_bookmarks, "copy_model_to_project", return_value=Path("sample.gguf")), \
-                 patch.object(llm_bookmarks, "_import_copied_model", return_value="sample"), \
+            with patch.object(llm_engine, "validate_model", side_effect=lambda p: Path(p)), \
+                 patch.object(llm_engine, "ensure_running"), \
                  patch.object(llm_bookmarks, "_ensure_server"), \
                  steps[0], steps[1], steps[2], \
                  patch.object(llm_bookmarks.time, "sleep"), \
@@ -389,38 +389,6 @@ class LlmBookmarkTests(unittest.TestCase):
                 toc = llm_bookmarks.detect_headings(str(path), "sample.gguf")
             self.assertEqual(toc, [{"title": "Section 1.2 Applications", "page": 0, "level": 1}])
             self.assertEqual(len(calls), 2)
-
-    def test_import_uses_hard_link_for_same_drive(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            model = root / "llm_models" / "abc123" / "model.gguf"
-            model.parent.mkdir(parents=True)
-            model.write_bytes(b"GGUF")
-            listing = json.dumps([{"path": "pdf-converter/abc123/model.gguf", "modelKey": "local-model"}])
-            with patch.object(llm_bookmarks, "lmstudio_models_dir", return_value=root / "lmstudio"), \
-                 patch.object(llm_bookmarks, "_lms", side_effect=["", "[]", listing]) as cli, \
-                 patch.object(llm_bookmarks.time, "sleep"):
-                self.assertEqual(llm_bookmarks._import_copied_model(model), "local-model")
-            self.assertIn("--hard-link", cli.call_args_list[0].args)
-
-    def test_import_reuses_identical_registration_from_another_copy(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            model = root / "llm_models" / "abc123" / "model.gguf"
-            model.parent.mkdir(parents=True)
-            model.write_bytes(b"GGUF" + b"same content")
-            registry = root / "lmstudio" / "pdf-converter" / "abc123" / "model.gguf"
-            registry.parent.mkdir(parents=True)
-            registry.write_bytes(model.read_bytes())
-            listing = json.dumps([{"path": "pdf-converter/abc123/model.gguf", "modelKey": "local-model"}])
-            with patch.object(llm_bookmarks, "lmstudio_models_dir", return_value=root / "lmstudio"), \
-                 patch.object(llm_bookmarks, "_lms", return_value=listing) as cli:
-                self.assertEqual(llm_bookmarks._import_copied_model(model), "local-model")
-            self.assertNotIn("import", cli.call_args_list[0].args)
-            registry.write_bytes(b"GGUF" + b"different")
-            with patch.object(llm_bookmarks, "lmstudio_models_dir", return_value=root / "lmstudio"), \
-                 self.assertRaisesRegex(RuntimeError, "同名但不同内容"):
-                llm_bookmarks._import_copied_model(model)
 
 
 if __name__ == "__main__":

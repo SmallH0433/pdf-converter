@@ -65,6 +65,35 @@ class BookmarkPageTests(unittest.TestCase):
 
         self.assertEqual([item["title"] for item in self.page._toc], ["第二章"])
 
+    def test_manual_bookmark_is_inserted_by_page_and_can_be_exported(self):
+        self.page._pdf_path = "sample.pdf"
+        self.page._on_detected([
+            {"level": 1, "title": "第一章", "page": 0},
+            {"level": 1, "title": "第三章", "page": 8},
+        ])
+        self.page.tree.topLevelItem(1).setCheckState(0, Qt.CheckState.Checked)
+
+        self.page._insert_bookmark({"level": 1, "title": "第二章", "page": 4})
+
+        self.assertEqual(
+            [(item["title"], item["page"]) for item in self.page._toc],
+            [("第一章", 0), ("第二章", 4), ("第三章", 8)],
+        )
+        self.assertTrue(self.page.export_btn.isEnabled())
+        self.assertEqual(
+            self.page.tree.topLevelItem(2).checkState(0), Qt.CheckState.Checked)
+
+    def test_manual_bookmark_can_create_first_result(self):
+        self.page._pdf_path = "sample.pdf"
+
+        self.page._insert_bookmark({"level": 3, "title": "手动书签", "page": 2})
+
+        self.assertEqual(
+            self.page._toc,
+            [{"level": 1, "title": "手动书签", "page": 2}],
+        )
+        self.assertEqual(self.page.tree.topLevelItemCount(), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

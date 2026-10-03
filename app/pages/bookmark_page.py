@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFileDialog,
+    QFormLayout,
     QHBoxLayout,
     QTreeWidget,
     QTreeWidgetItem,
@@ -22,11 +23,14 @@ from qfluentwidgets import (
     ComboBox,
     InfoBar,
     InfoBarPosition,
+    LineEdit,
+    MessageBoxBase,
     PrimaryPushButton,
     ProgressBar,
     PushButton,
     SpinBox,
     StrongBodyLabel,
+    SubtitleLabel,
 )
 
 from ..core import llm_bookmarks, ocr_service, pdf_service
@@ -38,6 +42,46 @@ MODES = [
     ("仅章节编号", "numbering"),
     ("仅标题样式（字号/粗体）", "font"),
 ]
+
+
+class AddBookmarkDialog(MessageBoxBase):
+    """手动添加书签标题、页码和层级。"""
+
+    def __init__(self, total_pages: int, default_page: int = 1,
+                 default_level: int = 1, parent=None):
+        super().__init__(parent)
+        self.titleLabel = SubtitleLabel("添加书签", self)
+        self.viewLayout.addWidget(self.titleLabel)
+
+        form = QFormLayout()
+        self.title_edit = LineEdit(self)
+        self.title_edit.setPlaceholderText("输入书签标题")
+        form.addRow("标题：", self.title_edit)
+
+        self.page_spin = SpinBox(self)
+        self.page_spin.setRange(1, max(1, total_pages))
+        self.page_spin.setValue(max(1, min(default_page, total_pages)))
+        form.addRow("页码：", self.page_spin)
+
+        self.level_spin = SpinBox(self)
+        self.level_spin.setRange(1, 6)
+        self.level_spin.setValue(max(1, min(default_level, 6)))
+        form.addRow("层级：", self.level_spin)
+        self.viewLayout.addLayout(form)
+
+        self.yesButton.setText("添加")
+        self.cancelButton.setText("取消")
+        self.yesButton.setEnabled(False)
+        self.title_edit.textChanged.connect(
+            lambda text: self.yesButton.setEnabled(bool(text.strip())))
+        self.widget.setMinimumWidth(400)
+
+    def bookmark(self) -> dict:
+        return {
+            "title": self.title_edit.text().strip(),
+            "page": self.page_spin.value() - 1,
+            "level": self.level_spin.value(),
+        }
 
 
 class BookmarkPage(QWidget):
@@ -111,8 +155,8 @@ class BookmarkPage(QWidget):
         llm_row.addWidget(self.model_browse_btn)
         llm_layout.addLayout(llm_row)
         llm_hint = CaptionLabel(
-            "首次使用会把所选模型复制到应用目录的 llm_models，再通过 LM Studio 在本机加载；"
-            "模型不包含在安装包中。仅支持已下载完成的 GGUF 主模型。", self)
+            "模型由应用内置的 llama.cpp 引擎直接加载（有 Vulkan 显卡则自动使用 GPU），"
+            "无需安装 LM Studio；模型不包含在安装包中。仅支持已下载完成的 GGUF 主模型。", self)
         llm_hint.setWordWrap(True)
         llm_layout.addWidget(llm_hint)
         root.addWidget(llm_card)
@@ -126,6 +170,9 @@ class BookmarkPage(QWidget):
         self.cancel_btn = PushButton("取消", self)
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.clicked.connect(self._cancel_detect)
+        self.add_btn = PushButton("添加书签", self)
+        self.add_btn.setEnabled(False)
+        self.add_btn.clicked.connect(self._add_bookmark)
         self.delete_btn = PushButton("删除勾选/选中条目", self)
         self.delete_btn.setEnabled(False)
         self.delete_btn.clicked.connect(self._delete_selected)
@@ -140,6 +187,7 @@ class BookmarkPage(QWidget):
         self.export_btn.clicked.connect(self._export)
         action_row.addWidget(self.detect_btn)
         action_row.addWidget(self.cancel_btn)
+        action_row.addWidget(self.add_btn)
         action_row.addWidget(self.delete_btn)
         action_row.addWidget(self.select_all_btn)
         action_row.addWidget(self.clear_selection_btn)
@@ -167,7 +215,8 @@ class BookmarkPage(QWidget):
 
         self.status_label = CaptionLabel("尚未加载文件", self)
         root.addWidget(self.status_label)
-        edit_hint = CaptionLabel("双击标题、页码或层级可直接编辑；勾选多条结果后可批量删除。", self)
+        edit_hint = CaptionLabel(
+            "可手动添加书签；双击标题、页码或层级可直接编辑；勾选多条结果后可批量删除。", self)
         root.addWidget(edit_hint)
 
         # 书签预览树
@@ -234,6 +283,7 @@ class BookmarkPage(QWidget):
         self._pdf_path = path
         self.drop_card.set_file(path)
         self.detect_btn.setEnabled(True)
+        self.add_btn.setEnabled(True)
         self._toc = []
         self.tree.clear()
         self.export_btn.setEnabled(False)
@@ -257,6 +307,7 @@ class BookmarkPage(QWidget):
         mode = MODES[self.mode_combo.currentIndex()][1]
         self.detect_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
+        self.add_btn.setEnabled(False)
         self.export_btn.setEnabled(False)
         use_ocr = self.ocr_check.isChecked()
         use_llm = bool(model_path)
@@ -311,6 +362,7 @@ class BookmarkPage(QWidget):
     def _finish_detect_ui(self):
         self.detect_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
+        self.add_btn.setEnabled(bool(self._pdf_path))
         self._hide_progress()
 
     def _hide_progress(self):
@@ -448,6 +500,54 @@ class BookmarkPage(QWidget):
             for item in self._all_tree_items()
             if item.checkState(0) == Qt.CheckState.Checked
         }
+
+    def _add_bookmark(self):
+        if not self._pdf_path or self._total_pages < 1:
+            return
+        default_page = 1
+        default_level = 1
+        current = self.tree.currentItem()
+        if current is not None:
+            idx = current.data(0, Qt.ItemDataRole.UserRole)
+            if idx is not None and 0 <= idx < len(self._toc):
+                default_page = self._toc[idx]["page"] + 1
+                default_level = self._toc[idx]["level"]
+        dialog = AddBookmarkDialog(
+            self._total_pages, default_page=default_page,
+            default_level=default_level, parent=self)
+        if dialog.exec():
+            self._insert_bookmark(dialog.bookmark())
+
+    def _insert_bookmark(self, bookmark: dict):
+        """按页码插入手动书签，并保持现有勾选状态。"""
+        title = str(bookmark.get("title", "")).strip()
+        page = int(bookmark.get("page", -1))
+        level = int(bookmark.get("level", 1))
+        if not title or not 0 <= page < self._total_pages or not 1 <= level <= 6:
+            raise ValueError("手动书签数据无效")
+
+        insert_at = next(
+            (i for i, item in enumerate(self._toc) if item["page"] > page),
+            len(self._toc),
+        )
+        checked = {
+            idx if idx < insert_at else idx + 1
+            for idx in self._checked_indices()
+        }
+        self._toc.insert(insert_at, {"title": title, "page": page, "level": level})
+        self._toc = pdf_service.normalize_toc(self._toc)
+        self._rebuild_tree(checked)
+        for item in self._all_tree_items():
+            if item.data(0, Qt.ItemDataRole.UserRole) == insert_at:
+                self.tree.setCurrentItem(item)
+                break
+
+        self.export_btn.setEnabled(True)
+        self.delete_btn.setEnabled(True)
+        self.select_all_btn.setEnabled(True)
+        self.clear_selection_btn.setEnabled(True)
+        self.status_label.setText(
+            f"共 {len(self._toc)} 条书签 · 已添加“{title}”（第 {page + 1} 页）")
 
     def _delete_selected(self):
         items = list(self.tree.selectedItems())

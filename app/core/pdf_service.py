@@ -159,11 +159,195 @@ RE_HEADING_START = re.compile(r"^([A-Z]|[^ -~])")  # 大写字母或非 ASCII（
 RE_MATH_RELATION = re.compile(r"(?:=|≠|≈|≤|≥|<|>)")
 RE_MATH_SYMBOL = re.compile(r"[=+*/^<>≤≥≠≈∫∑√{}\[\]|\\]")
 
+# ---- 与 LLM 模式一致的评判规则（非 LLM 模式适配）----
+# 目录、前言、索引等无关页面：整页候选剔除，防止污染标题识别
+_ROMAN_PAD = r"[0-9ivxlcdmⅠ-Ⅻⅰ-ⅻ\s]*"
+RE_TOC_MARKER = re.compile(rf"^{_ROMAN_PAD}(contents|目\s*录){_ROMAN_PAD}$", re.IGNORECASE)
+RE_INDEX_MARKER = re.compile(rf"^{_ROMAN_PAD}((subject\s+)?index|索\s*引){_ROMAN_PAD}$", re.IGNORECASE)
+RE_FRONT_MATTER_MARKER = re.compile(
+    rf"^{_ROMAN_PAD}(第\s*[0-9一二三四五六七八九十]+\s*版\s*)?"
+    rf"(preface|foreword|acknowledg\w*|前\s*言|序\s*言|序|致\s*谢|后\s*记|跋"
+    rf"|answers(\s+to\s+[\w\s-]+)?|习题答案|答案){_ROMAN_PAD}$",
+    re.IGNORECASE)
+# 条目后跟页码（点线/省略号/逗号引导），是目录或索引条目的特征
+RE_PAGE_REF = re.compile(r"(?:\.{3,}|…+|,)\s*\d{1,4}(?:\s*[-–,]\s*\d{1,4})*\s*$")
+RE_ROMAN_LINE = re.compile(r"^\s*[ivxlcdm]{1,8}\s*$", re.IGNORECASE)
+RE_NUM_LINE = re.compile(r"^\s*\d{1,4}\s*$")
+# 图表说明（"图3.1 ..."、"Fig. 4 ..."）永远不是书签标题
+RE_FIGURE_CAPTION = re.compile(r"^\s*[（(]?\s*(图|表|Fig\.?|FIG\.?|Figure|Table|TABLE)\s*[0-9０-９]")
+# 中文序号小节标题（"一、实验设计目标"），全书反复出现也是真实标题
+RE_CN_ORDINAL_HEADING = re.compile(r"^[一二三四五六七八九十百]+\s*、\s*\S")
+# 独占一行的裸章号（"第1章"、"CHAPTER 3"），章名在下一行
+RE_BARE_CHAPTER = re.compile(
+    r"^(第\s*[0-9０-９一二三四五六七八九十百千零]+\s*[章节篇部卷回讲]|CHAPTER\s+\d+)\s*$", re.IGNORECASE)
+
+
+def _is_non_content_page(texts: list[str]) -> bool:
+    """目录/索引/前言/章节概览页：整页跳过，防止目录污染。"""
+    for text in texts:
+        if (RE_TOC_MARKER.match(text) or RE_INDEX_MARKER.match(text)
+                or RE_FRONT_MATTER_MARKER.match(text)):
+            return True
+    strong = sum(1 for t in texts if RE_PAGE_REF.search(t))
+    # 罗马数字证据要求取值多样：真值表单元格的 X/D 等单字母会重复命中，不算
+    roman_lines = [t for t in texts if RE_ROMAN_LINE.match(t)]
+    roman = len(roman_lines) if len({t.lower() for t in roman_lines}) >= 3 else 0
+    # 单独的纯数字行只有在存在其他页码证据时才计入，避免把习题号误判成目录页码
+    plain_texts = [t for t in texts if RE_NUM_LINE.match(t)] if (roman >= 3 or strong >= 3) else []
+    if plain_texts:
+        # 代码清单页的行号也是纯数字行，但取值密集（接近连续整数）；目录页码稀疏分散
+        vals = sorted({int(t) for t in plain_texts})
+        plain = len(plain_texts) if vals and len(vals) / vals[-1] < 0.6 else 0
+    else:
+        plain = 0
+    refs = strong + plain
+    # 长页按绝对数量判，短页（目录续页）按比例判
+    if (refs >= 12 and refs >= len(texts) * 0.35) or (refs >= 5 and refs >= len(texts) * 0.6):
+        return True
+    # 章节概览页："第N章"式标题堆叠且正文长行稀少（如"教材基本内容""课程结构"页）
+    chapterish = sum(1 for t in texts if RE_CHINESE_HEADING.match(t) or RE_EN_HEADING.match(t))
+    long_lines = sum(1 for t in texts if len(t) >= 40)
+    return chapterish >= 3 and chapterish >= len(texts) * 0.08 and long_lines <= max(2, len(texts) * 0.1)
+
+
+def _clean_heading_text(text: str) -> str:
+    """标题文本清洗：项目符号、Wingdings 私用区字形、行尾教材页码指引、左侧公式前缀。"""
+    text = re.sub(r"^[·•‧▪◦*\-–—-\s]+", "", text)
+    text = re.sub(r"\s*[PpＰｐ]\s*\d+(?:\s*[PpＰｐ]\s*\d+)*\s*$", "", text)
+    m_cjk = re.search(r"[一-鿿]", text)
+    if m_cjk and m_cjk.start() > 0:
+        prefix, suffix = text[:m_cjk.start()], text[m_cjk.start():]
+        if (re.fullmatch(r"[A-Za-z0-9_.·=∂×∫∮∇ερσλ/()+\-\s]{1,20}", prefix)
+                and not re.match(r"^\d+\s*[.．]", text)
+                and not re.match(r"^[的和与及或在中等是，。、]", suffix)):
+            text = suffix
+    return text
+
+
+def _level_pattern(text: str) -> tuple | None:
+    """标题的编号模式签名：同一模式的标题在全书必须同一层级。"""
+    m = re.match(r"^(实验|项目|案例)\s*(\d+(?:\s*\.\s*\d+)*)", text)
+    if m:
+        return ("prefix_num", m.group(1), m.group(2).count("."))
+    if RE_CHINESE_HEADING.match(text):
+        return ("cn_chapter",)
+    m = re.match(r"^(\d+(?:\.\d+)+)\D", text)
+    if m:
+        return ("num", m.group(1).count("."))
+    m = re.match(r"^\d+\s*[.、．]\s*\S", text)
+    if m:
+        return ("num_top",)
+    if RE_CN_ORDINAL_HEADING.match(text):
+        return ("cn_ordinal",)
+    return None
+
+
+def _harmonize_levels(toc: list[dict]) -> list[dict]:
+    """全书层级一致性：同一编号模式的标题取众数层级，消除局部判断的层级漂移。"""
+    groups: dict[tuple, list[dict]] = {}
+    for h in toc:
+        key = _level_pattern(h["title"])
+        if key:
+            groups.setdefault(key, []).append(h)
+    for hs in groups.values():
+        if len(hs) < 2:
+            continue
+        levels = [h["level"] for h in hs]
+        best = max(set(levels), key=lambda lv: (levels.count(lv), -lv))
+        for h in hs:
+            h["level"] = best
+    return toc
+
+
+def _drop_running_head_entries(toc: list[dict]) -> tuple[list[dict], dict[str, str]]:
+    """漏进结果的章级页眉：同一"第N章 章名"文本以很小间隔反复出现（页眉每隔 1-2 页出现；
+    "一、栏目"式真实小节间隔不规则且不属章级样式，不受影响）。
+
+    返回 (过滤后的 toc, {规范化页眉文本: 原文})，页眉文本可用于补全裸章号标题。
+    """
+    pages_by: dict[str, list[int]] = {}
+    for i, h in enumerate(toc):
+        pages_by.setdefault("".join(h["title"].split()), []).append(i)
+    drop_idx: set[int] = set()
+    heads: dict[str, str] = {}
+    # 裸章号条目位置：附近有裸章号时页眉全剔（章名由合并步骤补全），否则保留密集段首页当章书签
+    bare_pages: dict[str, list[int]] = {}
+    for h in toc:
+        if RE_BARE_CHAPTER.match(h["title"]):
+            bare_pages.setdefault("".join(h["title"].split()), []).append(h["page"])
+    for norm_t, idxs in pages_by.items():
+        title = toc[idxs[0]]["title"]
+        if not (RE_CHINESE_HEADING.match(title) or RE_EN_HEADING.match(title)):
+            continue
+        pages = [toc[i]["page"] for i in idxs]
+        if len(pages) < 3:
+            continue
+        gaps = sorted(b - a for a, b in zip(pages, pages[1:]))
+        if not gaps or gaps[len(gaps) // 2] > 3:
+            continue
+        drop_idx.update(idxs)
+        heads[norm_t] = title
+        # 最长密集段（页眉正文段）的首页当章书签，排除目录页上的孤立同名条目
+        runs: list[list[int]] = [[0]]
+        for k in range(1, len(idxs)):
+            if pages[k] - pages[k - 1] <= 3:
+                runs[-1].append(k)
+            else:
+                runs.append([k])
+        keep = max(runs, key=len)[0]
+        first_page = toc[idxs[keep]]["page"]
+        bare_nearby = any(
+            norm_t.startswith(nb) and any(first_page - 2 <= p <= first_page + 1 for p in pgs)
+            for nb, pgs in bare_pages.items())
+        if not bare_nearby:
+            drop_idx.discard(idxs[keep])  # 该章没有自己的书签，页眉密集段首页留下当章书签
+            toc[idxs[keep]] = {**toc[idxs[keep]], "level": 1}
+    return [h for i, h in enumerate(toc) if i not in drop_idx], heads
+
+
+def _merge_chapter_fragments(toc: list[dict], heads: dict[str, str] | None = None) -> list[dict]:
+    """裸章号与下一行的无编号章名属同一标题，合并为一条；
+    章名未被选中时，用已剔除页眉文本的后缀补全（页眉常是"第N章 章名"）。"""
+    heads = heads or {}
+    out: list[dict] = []
+    i = 0
+    while i < len(toc):
+        h = toc[i]
+        if RE_BARE_CHAPTER.match(h["title"]) and i + 1 < len(toc):
+            nxt = toc[i + 1]
+            if (nxt["page"] <= h["page"] + 1 and nxt["level"] >= h["level"]
+                    and not _level_pattern(nxt["title"])):
+                out.append({**h, "title": h["title"] + " " + nxt["title"]})
+                i += 2
+                continue
+        if RE_BARE_CHAPTER.match(h["title"]):
+            norm_h = "".join(h["title"].split())
+            for norm_head in heads:
+                if norm_head.startswith(norm_h) and len(norm_head) > len(norm_h):
+                    suffix = heads[norm_head].replace("　", " ").strip()
+                    m = re.match(r"^第\s*[0-9０-９一二三四五六七八九十百千零]+\s*[章节篇部卷回讲]\s*(.+)$",
+                                 suffix, re.DOTALL)
+                    if m and m.group(1).strip():
+                        h = {**h, "title": h["title"] + " " + m.group(1).strip()}
+                    break
+        out.append(h)
+        i += 1
+    return out
+
+
+def finalize_toc(toc: list[dict]) -> list[dict]:
+    """书签后处理：剔除漏网页眉（保留首现当章书签）、合并裸章号、层级谐调、规整。"""
+    toc, heads = _drop_running_head_entries(toc)
+    return normalize_toc(_harmonize_levels(_merge_chapter_fragments(toc, heads)))
+
 
 def _mostly_words(text: str) -> bool:
     """判断文本是否像自然语言标题，而不是变量、缩写或公式碎片。"""
     letters = sum(1 for c in text if c.isalpha() or "一" <= c <= "鿿")
-    if letters < len(text) * 0.5 or not RE_WORD.search(text):
+    # 分母只计字母/数字/汉字：标题里的编号数字和标点不应拉低词密度
+    # （"实验3.1 实现3-8 译码器" 这类编号+短标题组合）
+    denom = sum(1 for c in text if c.isalnum() or "一" <= c <= "鿿")
+    if not denom or letters < denom * 0.5 or not RE_WORD.search(text):
         return False
     if re.search(r"[一-鿿]{2,}", text):
         return True
@@ -302,12 +486,17 @@ def detect_headings(
             page = doc.load_page(i)
             page_counter: dict[float, int] = {}
             had_text = False
+            page_rows: list[dict] = []
+            page_texts: list[str] = []
             for block in page.get_text("dict").get("blocks", []):
                 if block.get("type") != 0:
                     continue
                 for line in block.get("lines", []):
                     spans = line.get("spans") or []
                     text = "".join(s.get("text", "") for s in spans).strip()
+                    if text:
+                        page_texts.append(text)
+                    text = _clean_heading_text(text)
                     if len(text) < 2 or len(text) > 120:
                         continue
                     had_text = True
@@ -325,11 +514,11 @@ def detect_headings(
                         (s.get("flags", 0) & 16) or "bold" in s.get("font", "").lower()
                         for s in spans
                     )
-                    raw.append({
+                    page_rows.append({
                         "page": i, "text": text, "size": rsize, "bold": bold,
                         "bbox": tuple(line.get("bbox", ())),
                         "page_height": page.rect.height,
-                        "order": len(raw),
+                        "order": 0,
                     })
                     size_counter[rsize] = size_counter.get(rsize, 0) + len(text)
                     # 正文字号按长文本行统计，避免标题行干扰
@@ -339,21 +528,26 @@ def detect_headings(
                 # 扫描页：OCR 识别文字，字号用文本框高度近似；默认不识别批注/留言墨迹
                 from . import ocr_service
                 for ol in ocr_service.ocr_page(doc, page):
-                    text = ol["text"]
+                    text = _clean_heading_text(ol["text"].strip())
                     if len(text) < 2 or len(text) > 120:
                         continue
                     rsize = round(ol["size"] * 2) / 2
                     rect = ol.get("rect")
-                    raw.append({
+                    page_rows.append({
                         "page": i, "text": text, "size": rsize, "bold": False,
                         "bbox": tuple(rect) if rect is not None else (),
                         "page_height": page.rect.height,
-                        "order": len(raw),
+                        "order": 0,
                     })
                     size_counter[rsize] = size_counter.get(rsize, 0) + len(text)
                     if len(text) >= 30:
                         page_counter[rsize] = page_counter.get(rsize, 0) + len(text)
             page_size_counter.append(page_counter)
+            # 目录/索引/前言/章节概览等无关页面整页跳过，防止目录污染
+            if not _is_non_content_page(page_texts):
+                for row in page_rows:
+                    row["order"] = len(raw)
+                    raw.append(row)
             if progress_cb:
                 progress_cb(i + 1, total)
     finally:
@@ -439,6 +633,9 @@ def detect_headings(
             continue
         if _looks_like_formula(text):
             continue
+        # 点线/省略号+页码结尾是漏网的目录条目；图表说明永远不是标题
+        if RE_PAGE_REF.search(text) or RE_FIGURE_CAPTION.match(text):
+            continue
         body = body_of(r["page"])
         numbered = numbering_level(text) if use_num else None
         nlvl = numbered[0] if numbered else None
@@ -460,14 +657,19 @@ def detect_headings(
                 # 单整数编号（如 "1 xxx"）最易误伤习题号、年份，需粗体或明显大字号佐证
                 level = nlvl
                 num_comps = numbered[2][:nlvl]
+        if level is None and use_num and RE_CN_ORDINAL_HEADING.match(text) \
+                and len(text) <= 40 and (r["bold"] or r["size"] >= body * 1.05):
+            # 中文序号小节（"一、实验设计目标"）：无点号编号，靠粗体佐证，层级由众数谐调统一
+            level = 2
         if level is None and use_font and len(text) <= 60 \
                 and _mostly_words(text) and RE_HEADING_START.match(text) \
                 and r["size"] in size_level and r["size"] >= body * 1.12:
             level = size_level[r["size"]]
         if level is None:
             continue
-        # 反复出现的页眉页脚文本，除非明显是标题（带编号或字号很大）
-        if text in repeated and not (nlvl is not None or r["size"] >= body * 1.3):
+        # 反复出现的页眉页脚文本，除非明显是标题（带编号、中文序号栏目或字号很大）
+        if text in repeated and not (nlvl is not None or RE_CN_ORDINAL_HEADING.match(text)
+                                     or r["size"] >= body * 1.3):
             continue
         entry = {
             "level": level, "title": text, "page": r["page"],
@@ -508,7 +710,7 @@ def detect_headings(
     for item in merged:
         item.pop("_bbox", None)
         item.pop("_order", None)
-    return normalize_toc(merged)
+    return finalize_toc(merged)
 
 
 def _filter_numbering_by_sequence(headings: list[dict]) -> list[dict]:

@@ -1,4 +1,4 @@
-"""用 LM Studio 的本地模型判断 PDF 标题候选，模型文件不随安装包发布。"""
+"""用内置 llama.cpp 引擎加载本地 GGUF 模型判断 PDF 标题候选，模型文件不随安装包发布。"""
 from __future__ import annotations
 
 import hashlib
@@ -6,11 +6,9 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import time
 import urllib.error
-import urllib.request
 from pathlib import Path
 
 import fitz
@@ -18,7 +16,6 @@ import fitz
 from . import pdf_service
 
 
-API_BASE = "http://127.0.0.1:1234"
 MODEL_BATCH_SIZE = 24
 # 思考类模型（如 Qwen3）的推理过程同样占用 max_output_tokens，
 # 预算过低会导致推理耗尽配额、JSON 被截断为空，因此需要留足空间。
@@ -112,29 +109,12 @@ def copy_model_to_project(source: str | Path, progress_cb=None, cancel_check=Non
     return target
 
 
-def _lms_executable() -> str:
-    found = shutil.which("lms")
-    if found:
-        return found
-    bundled = Path.home() / ".lmstudio" / "bin" / ("lms.exe" if os.name == "nt" else "lms")
-    if bundled.is_file():
-        return str(bundled)
-    raise RuntimeError("未找到 LM Studio 命令行工具。请安装 LM Studio 并启动其本地服务。")
 
 
-def _lms(*args: str, timeout: int = 120) -> str:
-    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-    result = subprocess.run(
-        [_lms_executable(), *args], capture_output=True, text=True,
-        timeout=timeout, creationflags=flags,
-    )
-    if result.returncode:
-        raise RuntimeError(f"LM Studio 操作失败：{(result.stderr or result.stdout).strip()}")
-    return result.stdout
 
 
 def _post_chat(body: dict, timeout: int = 600) -> dict:
-    """发起对话请求；模型加载/切换期间 LM Studio 可能短暂返回 5xx，自动重试。"""
+    """发起对话请求；引擎加载/切换模型期间可能短暂返回 5xx，自动重试。"""
     last_exc: Exception | None = None
     for attempt in range(4):
         try:
@@ -152,112 +132,39 @@ def _post_chat(body: dict, timeout: int = 600) -> dict:
 
 
 def _json_request(path: str, body: dict | None = None, timeout: int = 30) -> dict:
-    data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
-    token = os.environ.get("LM_STUDIO_API_TOKEN", "")
-    headers = {"Content-Type": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(API_BASE + path, data=data, headers=headers)
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(request, timeout=timeout) as response:
-        return json.load(response)
+    """内部仍沿用 LM-Studio 风格的路径与响应形状，实际由内置 llama.cpp 引擎处理。"""
+    from . import llm_engine
+    if path == "/api/v1/chat":
+        return llm_engine.chat(body or {}, timeout=timeout)
+    if path == "/api/v1/models":
+        return llm_engine.models()
+    raise ValueError(f"未知接口：{path}")
 
 
 def _ensure_server() -> None:
-    try:
-        _json_request("/api/v1/models", timeout=2)
-        return
-    except urllib.error.HTTPError as exc:
-        if exc.code == 401:
-            raise RuntimeError("LM Studio 本地服务需要密钥，请设置 LM_STUDIO_API_TOKEN") from exc
-        raise
-    except (urllib.error.URLError, TimeoutError):
-        _lms("server", "start", timeout=30)
-    for _ in range(20):
-        try:
-            _json_request("/api/v1/models", timeout=2)
-            return
-        except (urllib.error.URLError, TimeoutError):
-            time.sleep(0.5)
-    raise RuntimeError("无法连接 LM Studio 本地服务（127.0.0.1:1234）")
+    """内置引擎的健康检查由 ensure_running 负责；此处仅确认进程存活。"""
+    from . import llm_engine
+    if not llm_engine.is_running():
+        raise RuntimeError("内置推理引擎未运行，请先加载模型")
 
 
-def _same_file_content(a: Path, b: Path) -> bool:
-    """抽样比对首尾各 4MB，避免对数 GB 模型做全量哈希。"""
-    if a.stat().st_size != b.stat().st_size:
-        return False
-    sample = 4 * 1024 * 1024
-    with a.open("rb") as fa, b.open("rb") as fb:
-        if fa.read(sample) != fb.read(sample):
-            return False
-        if a.stat().st_size > sample:
-            fa.seek(-sample, os.SEEK_END)
-            fb.seek(-sample, os.SEEK_END)
-            if fa.read(sample) != fb.read(sample):
-                return False
-    return True
-
-
-def _import_copied_model(model_path: Path) -> str:
-    """把项目内副本注册给 LM Studio；同盘优先硬链接，避免重复占用空间。"""
-    folder = model_path.parent.name
-    indexed_path = f"pdf-converter/{folder}/{model_path.name}"
-    registry_path = lmstudio_models_dir() / indexed_path
-    if not registry_path.exists():
-        link_mode = "--hard-link" if registry_path.drive.casefold() == model_path.drive.casefold() else "--symbolic-link"
-        _lms("import", str(model_path), link_mode, "--user-repo", f"pdf-converter/{folder}", "--yes")
-    elif not registry_path.samefile(model_path):
-        # 源码运行与安装版各自保存副本时，注册项可能链接到另一份同内容副本，直接复用
-        if not _same_file_content(registry_path, model_path):
-            raise RuntimeError("LM Studio 中已有同名但不同内容的模型，请重新选择")
-    # LM Studio 对新导入模型的索引有短暂延迟，不能立刻回退到原模型。
-    for attempt in range(20):
-        models = json.loads(_lms("ls", "--llm", "--json"))
-        for model in models:
-            if model.get("path", "").replace("\\", "/").casefold() == indexed_path.casefold():
-                return model["modelKey"]
-        if attempt < 19:
-            time.sleep(0.5)
-    raise RuntimeError("模型副本已复制，但 LM Studio 尚未识别；请在 LM Studio 中刷新模型列表后重试")
-
-
-def _original_model_key(source: str | Path) -> str | None:
-    """无法注册副本时，仍可使用 LM Studio 模型目录中的原模型。"""
-    try:
-        relative = Path(source).resolve().relative_to(lmstudio_models_dir().resolve()).as_posix()
-    except ValueError:
-        return None
-    for model in json.loads(_lms("ls", "--llm", "--json")):
-        if model.get("path", "").replace("\\", "/").casefold() == relative.casefold():
-            return model["modelKey"]
-    return None
-
-
-# 目录、前言、索引等无关页面：整页候选剔除，防止污染标题识别
-# 书眉常在关键词前后带罗马数字页码（如 "Ⅱ 目录"），中文前言常带版次（如 "第六版前言"）
-_ROMAN_PAD = r"[0-9ivxlcdmⅠ-Ⅻⅰ-ⅻ\s]*"
-RE_TOC_MARKER = re.compile(rf"^{_ROMAN_PAD}(contents|目\s*录){_ROMAN_PAD}$", re.IGNORECASE)
-RE_INDEX_MARKER = re.compile(rf"^{_ROMAN_PAD}((subject\s+)?index|索\s*引){_ROMAN_PAD}$", re.IGNORECASE)
-RE_FRONT_MATTER_MARKER = re.compile(
-    rf"^{_ROMAN_PAD}(第\s*[0-9一二三四五六七八九十]+\s*版\s*)?"
-    rf"(preface|foreword|acknowledg\w*|前\s*言|序\s*言|序|致\s*谢|后\s*记|跋"
-    rf"|answers(\s+to\s+[\w\s-]+)?|习题答案|答案){_ROMAN_PAD}$",
-    re.IGNORECASE)
-# 条目后跟页码（点线/省略号/逗号引导），是目录或索引条目的特征
-RE_PAGE_REF = re.compile(r"(?:\.{3,}|…+|,)\s*\d{1,4}(?:\s*[-–,]\s*\d{1,4})*\s*$")
-RE_ROMAN_LINE = re.compile(r"^\s*[ivxlcdm]{1,8}\s*$", re.IGNORECASE)
-RE_NUM_LINE = re.compile(r"^\s*\d{1,4}\s*$")
 # 只有数字、空格和点的碎片（"1 .2"、"13.1 5"），是 OCR 拆散的习题号或交叉引用，不是标题
 RE_NUM_FRAGMENT = re.compile(r"^\d+(?:[\s.．]+\d*)*[.．]?$")
-# 例题/习题题干：三级以上编号（允许 OCR 空格，如 "3. 3.1"）后紧跟题干
-RE_EXAMPLE_NUM = re.compile(r"^\d+(?:\s*[.．]\s*\d+){2,}")
+# 例题/习题题干：编号（允许 OCR 空格，如 "3. 3.1"、"1. 7"）后紧跟题干
+RE_EXAMPLE_NUM = re.compile(r"^\d+(?:\s*[.．]\s*\d+){1,}")
 RE_EXAMPLE_LEAD = re.compile(r"^(设|已知|求|证明|解|画|计|若|判|试|讨论|分析|用|给)")
 # 定理/例题等中文标签加编号（"定理2（有界性）"、"例3.1"）
 RE_CN_LABEL_NUM = re.compile(r"^[【\[]?(定理|推论|引理|例)\s*\d")
+# 图表说明（"图3.1 ..."、"Fig. 4 ..."）永远不是书签标题
+RE_FIGURE_CAPTION = pdf_service.RE_FIGURE_CAPTION
+# 中文序号小节标题（"一、实验设计目标"），全书反复出现也是真实标题
+RE_CN_ORDINAL_HEADING = pdf_service.RE_CN_ORDINAL_HEADING
+# 条目后跟页码（点线/省略号引导），是漏网目录/索引条目的特征
+RE_PAGE_REF = pdf_service.RE_PAGE_REF
 
 
 def _looks_like_example(text: str) -> bool:
-    """例题/习题题干不是标题：标签加编号，或三级编号后紧跟题干动词/句读。"""
+    """例题/习题题干不是标题：标签加编号，或编号后紧跟题干动词/句读。"""
     if RE_CN_LABEL_NUM.match(text):
         return True
     m = RE_EXAMPLE_NUM.match(text)
@@ -279,18 +186,8 @@ def _numbering_level(text: str, max_level: int) -> int | None:
 
 
 def _is_non_content_page(texts: list[str]) -> bool:
-    """目录/索引页条目密集且带页码，前言等页面标题无书签价值，整页跳过。"""
-    for text in texts:
-        if (RE_TOC_MARKER.match(text) or RE_INDEX_MARKER.match(text)
-                or RE_FRONT_MATTER_MARKER.match(text)):
-            return True
-    strong = sum(1 for t in texts if RE_PAGE_REF.search(t))
-    roman = sum(1 for t in texts if RE_ROMAN_LINE.match(t))
-    # 单独的纯数字行只有在存在其他页码证据时才计入，避免把习题号误判成目录页码
-    plain = sum(1 for t in texts if RE_NUM_LINE.match(t)) if (roman >= 3 or strong >= 3) else 0
-    refs = strong + plain
-    # 长页按绝对数量判，短页（目录续页）按比例判
-    return (refs >= 12 and refs >= len(texts) * 0.35) or (refs >= 5 and refs >= len(texts) * 0.6)
+    """无关页面整页剔除（实现与规则见 pdf_service，非 LLM 模式共用）。"""
+    return pdf_service._is_non_content_page(texts)
 
 
 def _extract_candidates(pdf_path: str, use_ocr: bool, progress_cb=None, cancel_check=None) -> list[dict]:
@@ -309,6 +206,19 @@ def _extract_candidates(pdf_path: str, use_ocr: bool, progress_cb=None, cancel_c
                 for line in block.get("lines", []):
                     spans = line.get("spans") or []
                     text = "".join(s.get("text", "") for s in spans).strip()
+                    # 清洗行首的项目符号、私用区字形（Wingdings 符号 \uf0b2 等）和孤立公式符号
+                    text = re.sub(r"^[·•‧▪◦*\-–—-\s]+", "", text)
+                    # 行尾的教材页码指引（"1、人生观     P16"、"P227 P233"）是注释不是标题文字
+                    text = re.sub(r"\s*[PpＰｐ]\s*\d+(?:\s*[PpＰｐ]\s*\d+)*\s*$", "", text)
+                    # 标题左侧同行的公式前缀（"SE·nda 矢量场的通量"、"ε0 真空电容率"）剥到首个汉字；
+                    # 编号前缀（"1.1 ..."）和助词开头的标题（"K 的确定"）不动
+                    m_cjk = re.search(r"[一-鿿]", text)
+                    if m_cjk and m_cjk.start() > 0:
+                        prefix, suffix = text[:m_cjk.start()], text[m_cjk.start():]
+                        if (re.fullmatch(r"[A-Za-z0-9_.·=∂×∫∮∇ερσλ/()+\-\s]{1,20}", prefix)
+                                and not re.match(r"^\d+\s*[.．]", text)
+                                and not re.match(r"^[的和与及或在中等是，。、]", suffix)):
+                            text = suffix
                     if not text:
                         continue
                     page_texts.append(text)
@@ -362,15 +272,23 @@ def _extract_candidates(pdf_path: str, use_ocr: bool, progress_cb=None, cancel_c
         bbox = row["bbox"]
         if not bbox or len(bbox) != 4 or pdf_service.RE_PAGENUM.fullmatch(text):
             continue
-        if RE_NUM_FRAGMENT.match(text) or _looks_like_example(text):
+        if RE_NUM_FRAGMENT.match(text) or _looks_like_example(text) or RE_FIGURE_CAPTION.match(text):
+            continue
+        # 候选文字本身带点线/省略号+页码结尾，是漏网的目录/索引条目，不是标题
+        if RE_PAGE_REF.search(text):
+            continue
+        # 无汉字且含公式运算符的纯公式行（"× E = - ∂B"），不是标题
+        if not re.search(r"[一-鿿]", text) and re.search(r"[=∂∫∮∇×]", text):
             continue
         if bbox[1] < row["page_height"] * 0.04 or bbox[3] > row["page_height"] * 0.96:
             continue
-        if len(frequency[text]) >= max(4, page_count * 0.15):
+        numbered = bool(pdf_service.RE_EN_HEADING.match(text) or pdf_service.RE_CHINESE_HEADING.match(text)
+                        or pdf_service.RE_NUM_HEADING.match(text) or RE_CN_ORDINAL_HEADING.match(text))
+        # 带编号的标题（"一、实验设计目标"、"3.2 ..."）可能在全书反复出现，
+        # 不能像页眉一样按频率剔除；是否页眉交给后续 LLM 步骤判断
+        if not numbered and len(frequency[text]) >= max(4, page_count * 0.15):
             continue
         body = page_bodies.get(row["page"], default_body)
-        numbered = bool(pdf_service.RE_EN_HEADING.match(text) or pdf_service.RE_CHINESE_HEADING.match(text)
-                        or pdf_service.RE_NUM_HEADING.match(text))
         if not (numbered or (len(text) <= 100 and (row["bold"] or row["size"] >= body * 1.1))):
             continue
         candidates.append({"id": len(candidates), "page": row["page"], "text": text,
@@ -476,7 +394,14 @@ def _llm_drop_front_matter(pdf_path: str, candidates: list[dict],
     prompt = (
         f"这本书的书名是《{title}》。以下是本书前 20 页的开头文字。"
         "请判断哪些页属于封面、版权页、出版说明、前言、序言、目录、致谢等无关部分（不是正文章节）；"
-        "封面页通常只有书名片段或作者名。只返回 JSON：{\"drop_pages\":[0,1]}；没有则返回 {\"drop_pages\":[]}。\n"
+        "封面页通常只有书名片段或作者名。"
+        "把全书章节罗列在一起的课程结构/内容概览页（如 \"教材基本内容\"\"本课程结构\"\"内容安排\"，"
+        "表现为连续多行 \"第一章…\"\"第二章…\" 的列表）也算目录类无关页，一并摘除。"
+        "注意：目录常常跨越多页，续页开头不会再出现\"目录\"二字，"
+        "只要某页主要由带点线（......）和页码的条目列表构成，它也是目录页，必须一并摘除。"
+        "但每页预览只显示前几行且可能以重复的页眉书名开头，判断目录续页时该页必须几乎全是带点线的条目；"
+        "若页面中出现不带点线的章节标题或正文句子，则该页是正文页，绝不能摘除。"
+        "只返回 JSON：{\"drop_pages\":[0,1]}；没有则返回 {\"drop_pages\":[]}。\n"
         + "\n".join(previews)
     )
     try:
@@ -487,6 +412,33 @@ def _llm_drop_front_matter(pdf_path: str, candidates: list[dict],
         drop = {p for p in pages if type(p) is int and 0 <= p < 10_000}
     except Exception:
         return candidates
+    if not drop:
+        return candidates
+    # 防误摘：模型可能把目录续页之后的正文第一页也摘掉。
+    # 含章节标题样式文字（且该文字不是带点线的目录条目）的页是正文页，不接受摘除。
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception:
+        doc = None
+    if doc is None:
+        return _reid([c for c in candidates if c["page"] not in drop])
+    try:
+        for p in sorted(drop):
+            if p >= doc.page_count:
+                continue
+            lines = [l.strip() for l in doc.load_page(p).get_text("text").splitlines() if l.strip()]
+            # 纯标题列表页（章节概览）没有正文长行，不受保护
+            if not any(len(l) >= 40 for l in lines):
+                continue
+            for line in lines:
+                if RE_PAGE_REF.search(line):
+                    continue
+                if (pdf_service.RE_CHINESE_HEADING.match(line) or pdf_service.RE_EN_HEADING.match(line)
+                        or RE_CN_ORDINAL_HEADING.match(line)):
+                    drop.discard(p)
+                    break
+    finally:
+        doc.close()
     if not drop:
         return candidates
     return _reid([c for c in candidates if c["page"] not in drop])
@@ -512,7 +464,8 @@ def _llm_drop_running_heads(candidates: list[dict], model_key: str, title: str) 
         prompt = (
             f"这本书的书名是《{title}》。以下文本在书中多个页面重复出现。"
             "请判断哪些是页眉/页脚内容（重复出现的书名、章节名、装饰文字、栏目名等）。"
-            "注意：在不同章节反复出现的编号小节名（如 \"1.概念\"）是真实小节标题，不要摘除。"
+            "注意：在不同章节反复出现的编号小节名（如 \"1.概念\"）是真实小节标题，不要摘除；"
+            "\"习题\"\"小结\"\"参考文献\" 这类每章末尾固定出现一次的栏目名也是真实小节标题，不要摘除。"
             "只返回 JSON：{\"drop\":[\"文本\",\"...\"]}；没有则返回 {\"drop\":[]}。\n"
             + listing
         )
@@ -525,7 +478,53 @@ def _llm_drop_running_heads(candidates: list[dict], model_key: str, title: str) 
             pass
     if not drop_texts:
         return candidates
+    # 频率守卫：真正的页眉页脚会出现在大量页面上；
+    # "习题""小结" 这类每章一次的栏目名是真实小节标题，即使模型误判也不摘
+    page_count = max(c["page"] for c in candidates) + 1
+    min_head_pages = max(5, int(page_count * 0.08))
+    drop_texts = {t for t in drop_texts
+                  if len(freq.get(t, ())) >= min_head_pages
+                  or len(freq.get(t, ())) >= page_count * 0.2}
+    if not drop_texts:
+        return candidates
     return _reid([c for c in candidates if c["text"] not in drop_texts])
+
+
+def _batch_prompt(batch: list[dict], recent: list[dict], max_level: int) -> str:
+    return (
+        "以下是按 PDF 原顺序提取的标题候选（已剔除目录、前言、致谢、索引等无关页面及页眉页脚）。"
+        "请仅选真正的章节/小节标题。必须排除：公式和变量、图表说明、页眉、正文句子"
+        "（包括以数字开头的正文句，如 \"1 do not necessarily ...\"、\"55 construct ...\"）、"
+        "参考文献条目、习题编号和习题引用（孤立或带空格的纯数字，如 \"1 .4\"、\"13.1 5\"）、"
+        "章节引用（如 \"Sec. 2.3\"、\"Fig. 4\"、\"Table 1\"）、"
+        "定理/推论等标签（THEOREM、COROLLARY、LEMMA、CASE、PROOF、DEFINITION，及中文 \"定理2（有界性）\" 这类）、"
+        "例题和习题题干（编号后紧跟\"设\"\"已知\"\"求\"\"证明\"\"解\"\"画\"等动词或句中含逗号句号，如 \"1.1.4画出...\"、\"3. 3.1设...\"）、"
+        "位于 \"习题\"\"练习题\"\"Problems\" 标题之后的所有编号条目（那是习题编号不是小节，如 \"1. 14 圆柱坐标系中...\"、\"3. 6 边长分别为...\"）、"
+        "正文中的编号列表步骤（如 \"1. Find ...\"）、习题答案内容、封面和书名页文字，"
+        "以冒号结尾的正文枚举项（如 \"1. 有界性：\"、\"（1）可去间断点：\"、\"（2）规范性：\" 这类句中列表，不是标题；"
+        "但冒号在中间、后面还有标题文字的候选是标题，如 \"3、凑微分法：要求熟练掌握各类导数\"），"
+        "带括号的小编号项（如 \"（1）\"\"(2)\"\"（Ⅱ）\" 开头的候选一律不选），"
+        "编号后接 20 字以上完整句子的候选（如 \"6.1 AD 输入接口接实验平台的信号源输出，DA 输出接示波器\"），那是正文不是标题，"
+        "以及漏网的目录条目和索引词条。\n"
+        "正文中加粗的段落引导句（完整的句子或带主谓结构的短语，如 \"The order of a differential equation\"）不是标题，不要选；"
+        "但无编号、加粗或字号大于正文、独立成行的短名词性概念标题（如 \"电场\"、\"点乘\"、\"单位法向量\"，"
+        "一般 2-15 字、不含动词和标点）是小节标题，应选中并定为 level 3（或按上下文归入合适层级）；"
+        "无编号条目只有在独占页面（章标题页）时才是 level 1 标题。"
+        "符合 \"N.M\" 编号格式且位于小节起始处的候选默认都应选中，不要遗漏（如 1.7、2.2 这类）。\n"
+        "层级规则（严格遵守，包括第一批在内，不要参考上一批标题的层级）："
+        "编号前的固定前缀（第、实验、项目、案例、Chapter、Lesson 等）不影响层级，层级只由编号段数决定："
+        "\"实验三\"与\"第3章\"同为章级，\"实验2.2\"与\"2.2\"同为节级；"
+        "编号 \"N\"（如 \"13\"、\"第3章\"、\"第5讲\"）是章，level 1；\"N.M\"（如 \"13.1\"、\"1.1\"）是节，level 2；"
+        "\"N.M.K\" 是子节，level 3；无编号但独占页面或字号明显最大的章标题也是 level 1；"
+        "中文序号\"一、二、三…\"式栏目是所属章节下的小节，层级 = 父级 + 1（不超过最大层级），且全书必须同一层级；"
+        "中文书中\"基础知识结构\"\"基础内容精讲\"\"基础例题精解\"\"基础习题精练\"等固定栏目是节，level 2；"
+        "同一章内同一编号风格必须层级一致：\"一、二、三\"式、\"1. 2. 3.\"式、\"题型N\"式各自内部的层级不得忽高忽低；"
+        "同一标题拆成多个连续片段时只选一个片段（优先含编号的；\"CHAPTER N\" 与紧随的书名文字属同一标题）。\n"
+        "只返回 JSON，格式为 {\"headings\":[{\"id\":0,\"level\":1}]}。"
+        "id 必须来自候选，level 为 1 到 " + str(max_level) + "。不要改写文字、不要编造页码。\n"
+        "上一批已确认标题（仅用于理解顺序，不要模仿其层级）：" + json.dumps(recent, ensure_ascii=False) + "\n"
+        "候选：" + json.dumps(batch, ensure_ascii=False)
+    )
 
 
 def detect_headings(pdf_path: str, model_source: str, max_level: int = 3,
@@ -542,28 +541,12 @@ def detect_headings(pdf_path: str, model_source: str, max_level: int = 3,
     if llm_progress_cb:
         llm_progress_cb(0, llm_total)
     if status_cb:
-        status_cb("正在复制模型到应用目录（首次使用可能需要几分钟）…")
-    last_percent = -1
-
-    def on_copy(done: int, total: int) -> None:
-        nonlocal last_percent
-        percent = int(done * 100 / total)
-        if status_cb and percent >= last_percent + 5:
-            status_cb(f"正在复制模型到应用目录：{percent}%")
-            last_percent = percent
-
-    copied = copy_model_to_project(model_source, progress_cb=on_copy, cancel_check=cancel_check)
+        status_cb("内置推理引擎正在加载模型…")
+    from . import llm_engine
+    model_path = llm_engine.validate_model(model_source)
+    llm_engine.ensure_running(model_path, status_cb=status_cb)
     _check_cancel(cancel_check)
-    if status_cb:
-        status_cb("正在通过 LM Studio 加载本地模型…")
-    try:
-        model_key = _import_copied_model(copied)
-    except RuntimeError:
-        model_key = _original_model_key(model_source)
-        if model_key is None:
-            raise
-        if status_cb:
-            status_cb("模型副本已保存在应用目录；无法注册副本，改用 LM Studio 原模型运行")
+    model_key = "local"  # llama-server 单模型服务，名称仅作占位
     _ensure_server()
     if llm_progress_cb:
         llm_progress_cb(1, llm_total)
@@ -607,52 +590,43 @@ def detect_headings(pdf_path: str, model_source: str, max_level: int = 3,
         if status_cb:
             status_cb(f"本地模型正在判断标题：{min(start + len(batch), len(candidates))}/{len(candidates)}")
         recent = [{"title": h["title"], "level": h["level"]} for h in toc[-5:]]
-        prompt = (
-            "以下是按 PDF 原顺序提取的标题候选（已剔除目录、前言、致谢、索引等无关页面及页眉页脚）。"
-            "请仅选真正的章节/小节标题。必须排除：公式和变量、图表说明、页眉、正文句子"
-            "（包括以数字开头的正文句，如 \"1 do not necessarily ...\"、\"55 construct ...\"）、"
-            "参考文献条目、习题编号和习题引用（孤立或带空格的纯数字，如 \"1 .4\"、\"13.1 5\"）、"
-            "章节引用（如 \"Sec. 2.3\"、\"Fig. 4\"、\"Table 1\"）、"
-            "定理/推论等标签（THEOREM、COROLLARY、LEMMA、CASE、PROOF、DEFINITION，及中文 \"定理2（有界性）\" 这类）、"
-            "例题和习题题干（编号后紧跟\"设\"\"已知\"\"求\"\"证明\"\"解\"\"画\"等动词或句中含逗号句号，如 \"1.1.4画出...\"、\"3. 3.1设...\"）、"
-            "正文中的编号列表步骤（如 \"1. Find ...\"）、习题答案内容、封面和书名页文字，"
-            "以及漏网的目录条目和索引词条。\n"
-            "正文中加粗的段落引导句（如 \"The order of a differential equation\"）不是标题，不要选；"
-            "无编号条目只有在独占页面（章标题页）时才是 level 1 标题。"
-            "符合 \"N.M\" 编号格式且位于小节起始处的候选默认都应选中，不要遗漏（如 1.7、2.2 这类）。\n"
-            "层级规则（严格遵守，包括第一批在内，不要参考上一批标题的层级）："
-            "编号 \"N\"（如 \"13\"、\"第3章\"、\"第5讲\"）是章，level 1；\"N.M\"（如 \"13.1\"、\"1.1\"）是节，level 2；"
-            "\"N.M.K\" 是子节，level 3；无编号但独占页面或字号明显最大的章标题也是 level 1；"
-            "中文书中\"基础知识结构\"\"基础内容精讲\"\"基础例题精解\"\"基础习题精练\"等固定栏目是节，level 2；"
-            "同一标题拆成多个连续片段时只选一个片段（优先含编号的；\"CHAPTER N\" 与紧随的书名文字属同一标题）。\n"
-            "只返回 JSON，格式为 {\"headings\":[{\"id\":0,\"level\":1}]}。"
-            "id 必须来自候选，level 为 1 到 " + str(max_level) + "。不要改写文字、不要编造页码。\n"
-            "上一批已确认标题（仅用于理解顺序，不要模仿其层级）：" + json.dumps(recent, ensure_ascii=False) + "\n"
-            "候选：" + json.dumps(batch, ensure_ascii=False)
-        )
-        valid_ids = {r["id"] for r in batch}
-        budget = MAX_OUTPUT_TOKENS
-        while True:
-            _check_cancel(cancel_check)
-            response = _post_chat({
-                "model": model_key, "input": prompt, "system_prompt": "你是严格的 PDF 目录标题分类器，只输出合法 JSON。",
-                "temperature": 0, "max_output_tokens": budget, "store": False,
-            })
-            answer = "\n".join(item.get("content", "") for item in response.get("output", [])
-                               if item.get("type") == "message")
-            try:
-                selected = _parse_headings(answer, valid_ids, max_level)
-                break
-            except ValueError:
-                if budget >= RETRY_OUTPUT_TOKENS:
-                    raise
-                budget = RETRY_OUTPUT_TOKENS
-                if status_cb:
-                    status_cb("模型输出被截断，正在加大输出上限重试本批…")
+        prompt = _batch_prompt(batch, recent, max_level)
+        def ask(sub_batch: list[dict]) -> list[tuple[int, int]] | None:
+            """问一批；失败返回 None。先标准预算，截断则加大预算，再失败拆半递归。"""
+            sub_valid = {r["id"] for r in sub_batch}
+            sub_prompt = prompt if sub_batch is batch else _batch_prompt(sub_batch, recent, max_level)
+            for budget in (MAX_OUTPUT_TOKENS, RETRY_OUTPUT_TOKENS):
+                _check_cancel(cancel_check)
+                response = _post_chat({
+                    "model": model_key, "input": sub_prompt,
+                    "system_prompt": "你是严格的 PDF 目录标题分类器，只输出合法 JSON。",
+                    "temperature": 0, "max_output_tokens": budget, "store": False,
+                })
+                answer = "\n".join(item.get("content", "") for item in response.get("output", [])
+                                   if item.get("type") == "message")
+                try:
+                    return _parse_headings(answer, sub_valid, max_level)
+                except ValueError:
+                    if budget == MAX_OUTPUT_TOKENS and status_cb:
+                        status_cb("模型输出被截断，正在加大输出上限重试本批…")
+            if len(sub_batch) > 1:
+                mid = len(sub_batch) // 2
+                left = ask(sub_batch[:mid])
+                right = ask(sub_batch[mid:])
+                if left is None or right is None:
+                    return None
+                return left + right
+            return None
+
+        selected = ask(batch)
+        if selected is None:
+            if status_cb:
+                status_cb(f"第 {start // MODEL_BATCH_SIZE + 1} 批模型多次未返回有效 JSON，已跳过该批候选")
+            selected = []
         for index, level in selected:
             row = candidates[index]
             level = _numbering_level(row["text"], max_level) or level
             toc.append({"title": row["text"], "page": row["page"], "level": level})
         if llm_progress_cb:
             llm_progress_cb(5 + start // MODEL_BATCH_SIZE, llm_total)
-    return pdf_service.normalize_toc(toc)
+    return pdf_service.finalize_toc(toc)

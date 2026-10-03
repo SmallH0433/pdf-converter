@@ -3,6 +3,12 @@ build/
 dist/
 installer/
 _nsis/
+_llama/
+_tuning/
+_scan_materials.py
+_tune_round.py
+_judge.py
+测试素材/
 __pycache__/
 *.pyc
 ocr_modules/
