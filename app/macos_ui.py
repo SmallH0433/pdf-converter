@@ -25,12 +25,13 @@ def configure_application(app: QApplication) -> None:
     app.setEffectEnabled(Qt.UIEffect.UI_AnimateCombo, True)
 
 
-def configure_liquid_glass_window(window, sidebar) -> bool:
-    """Attach system-managed macOS material behind the Qt sidebar.
+def configure_liquid_glass_window(window, _sidebar) -> bool:
+    """Configure the native unified titlebar used by the macOS shell.
 
-    ``NSVisualEffectMaterialSidebar`` adopts Liquid Glass on macOS 27 and also
-    follows accessibility settings such as Reduce Transparency.  Keeping this
-    in a guarded helper makes tests and non-macOS builds independent of PyObjC.
+    The sidebar itself is painted by Qt.  Embedding an ``NSVisualEffectView``
+    next to Qt's backing store can cover Qt child widgets in a frozen app, so
+    the stable cross-build solution keeps native material at window chrome and
+    uses system-matched colors for the navigation layer.
     """
     if not IS_MACOS:
         return False
@@ -41,8 +42,6 @@ def configure_liquid_glass_window(window, sidebar) -> bool:
 
         native_window_view = objc.objc_object(
             c_void_p=ctypes.c_void_p(int(window.winId())))
-        native_sidebar_view = objc.objc_object(
-            c_void_p=ctypes.c_void_p(int(sidebar.winId())))
         native_window = native_window_view.window()
         if native_window is None:
             return False
@@ -58,19 +57,7 @@ def configure_liquid_glass_window(window, sidebar) -> bool:
         native_window.setOpaque_(True)
         native_window.setBackgroundColor_(AppKit.NSColor.windowBackgroundColor())
 
-        effect = AppKit.NSVisualEffectView.alloc().initWithFrame_(
-            native_sidebar_view.bounds())
-        effect.setMaterial_(AppKit.NSVisualEffectMaterialSidebar)
-        effect.setBlendingMode_(AppKit.NSVisualEffectBlendingModeBehindWindow)
-        effect.setState_(AppKit.NSVisualEffectStateFollowsWindowActiveState)
-        effect.setAutoresizingMask_(
-            AppKit.NSViewWidthSizable | AppKit.NSViewHeightSizable)
-        native_sidebar_view.addSubview_positioned_relativeTo_(
-            effect, AppKit.NSWindowBelow, None)
-
-        # PyObjC normally retains subviews through AppKit.  Keep an explicit
-        # Python reference too so this stays reliable in a frozen application.
-        window._macos_material_views = [effect]
+        window._macos_material_views = []
         window.setProperty("macLiquidGlassActive", True)
         return True
     except Exception:  # noqa: BLE001 - native bridge must always fail closed

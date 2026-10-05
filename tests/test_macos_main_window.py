@@ -31,7 +31,7 @@ class MacMainWindowTests(unittest.TestCase):
         self.assertTrue(self.window.sidebar_action.isChecked())
         self.assertEqual(self.window.sidebar.property("macMaterial"), "sidebar")
         self.assertEqual(self.window.content_stack.property("macMaterial"), "content")
-        self.assertTrue(
+        self.assertFalse(
             self.window.sidebar.testAttribute(
                 Qt.WidgetAttribute.WA_TranslucentBackground))
         self.assertEqual(self.window.sidebar_list.item(0).sizeHint().height(), 42)

@@ -171,8 +171,11 @@ class MacMainWindow(QMainWindow):
         self.sidebar = QFrame(central)
         self.sidebar.setObjectName("macSidebar")
         self.sidebar.setProperty("macMaterial", "sidebar")
-        self.sidebar.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.sidebar.setAutoFillBackground(False)
+        # Keep the Qt sidebar opaque.  The native AppKit titlebar is configured
+        # separately; a translucent Qt backing store can become invisible in
+        # frozen macOS builds when combined with full-size content view.
+        self.sidebar.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        self.sidebar.setAutoFillBackground(True)
         self.sidebar.setFixedWidth(236)
         sidebar_layout = QVBoxLayout(self.sidebar)
         sidebar_layout.setContentsMargins(14, 18, 14, 14)
@@ -267,6 +270,7 @@ class MacMainWindow(QMainWindow):
 
     def _apply_appearance(self, *_args):
         dark = isDarkTheme()
+        sidebar = "#2C2C2E" if dark else "#ECECEE"
         content = "#18181A" if dark else "#F5F5F7"
         card = "rgba(255, 255, 255, 16)" if dark else "rgba(255, 255, 255, 210)"
         card_hover = "rgba(255, 255, 255, 24)" if dark else "rgba(255, 255, 255, 242)"
@@ -283,8 +287,9 @@ class MacMainWindow(QMainWindow):
                 background: {content};
             }}
             QFrame#macSidebar {{
-                background: transparent;
+                background: {sidebar};
                 border: none;
+                border-right: 1px solid {border};
             }}
             QLabel#macSidebarTitle {{
                 color: {text};
