@@ -19,6 +19,7 @@ if not (llama_runtime / "llama-server").is_file():
 datas.append((str(llama_runtime), "llama"))
 
 hiddenimports += collect_submodules("pymupdf")
+hiddenimports += collect_submodules("app.pages")
 for package in ("qfluentwidgets", "rapidocr"):
     package_datas, package_binaries, package_hidden = collect_all(package)
     datas += package_datas
