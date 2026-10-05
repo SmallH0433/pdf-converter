@@ -6,8 +6,22 @@ from app.core import ocr_service
 
 
 class OcrBackendSelectionTests(unittest.TestCase):
+    def test_apple_silicon_uses_coreml_without_power_or_gpu_detection(self):
+        with (
+            patch.object(ocr_service.platform, 'system', return_value='Darwin'),
+            patch.object(ocr_service.platform, 'machine', return_value='arm64'),
+            patch.object(ocr_service, '_cuda_installed', side_effect=AssertionError),
+            patch.object(ocr_service, '_directml_installed', side_effect=AssertionError),
+            patch.object(ocr_service, 'power_state', side_effect=AssertionError),
+            patch.object(ocr_service, 'gpu_names', side_effect=AssertionError),
+        ):
+            self.assertEqual(ocr_service._planned_backend(), 'coreml')
+            self.assertEqual(ocr_service.best_backend(), 'coreml')
+            self.assertEqual(ocr_service.backend_name(), 'GPU (CoreML)')
+
     def test_intel_machine_prefers_directml_over_stale_cuda_files(self):
         with (
+            patch.object(ocr_service.platform, 'system', return_value='Windows'),
             patch.object(ocr_service, '_cuda_installed', return_value=True),
             patch.object(ocr_service, '_directml_installed', return_value=True),
             patch.object(ocr_service, 'has_nvidia_gpu', return_value=False),
@@ -17,7 +31,10 @@ class OcrBackendSelectionTests(unittest.TestCase):
     def test_backend_label_does_not_import_onnxruntime(self):
         previous = sys.modules.pop('onnxruntime', None)
         try:
-            with patch.object(ocr_service, '_planned_backend', return_value='directml'):
+            with (
+                patch.object(ocr_service.platform, 'system', return_value='Windows'),
+                patch.object(ocr_service, '_planned_backend', return_value='directml'),
+            ):
                 self.assertEqual(
                     ocr_service.backend_name(),
                     'GPU (DirectML)（首次识别时验证）',

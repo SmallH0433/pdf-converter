@@ -23,10 +23,10 @@ LLM 只判断从 PDF 提取的候选标题，不自行生成页码或改写文�
 
 ## 安装
 
-从 [GitHub Releases](https://github.com/SmallH0433/pdf-converter/releases) 下载最新版本。当前版本为 **1.3.1**：
+从 [GitHub Releases](https://github.com/SmallH0433/pdf-converter/releases) 下载最新版本。macOS 当前版本为 **1.3.3**：
 
 - Windows 10 / 11：[下载 PDF-Converter-Setup-1.2.16.exe](https://github.com/SmallH0433/pdf-converter/releases/download/v1.2.16/PDF-Converter-Setup-1.2.16.exe)
-- macOS 13+（Apple Silicon）：[下载 PDF-Converter-macOS-arm64-1.3.1.dmg](https://github.com/SmallH0433/pdf-converter/releases/download/v1.3.1/PDF-Converter-macOS-arm64-1.3.1.dmg)
+- macOS 13+（Apple Silicon）：[下载 PDF-Converter-macOS-arm64-1.3.3.dmg](https://github.com/SmallH0433/pdf-converter/releases/download/v1.3.3/PDF-Converter-macOS-arm64-1.3.3.dmg)
 - Android 8.0+：[下载 PDF-Converter-Android-1.0.1.apk](https://github.com/SmallH0433/pdf-converter/releases/download/v1.2.2/PDF-Converter-Android-1.0.1.apk)
 
 macOS 包目前使用临时签名、尚未经过 Apple 公证；如果系统首次打开时拦截，请在 Finder 中右键应用并选择「打开」。
@@ -35,6 +35,11 @@ macOS 包目前使用临时签名、尚未经过 Apple 公证；如果系统首�
 - 支持 Windows 10 / 11（64 位）；Windows 10 建议 21H2 及以上
 - 自带卸载程序，注册到 Windows「应用和功能」
 - 安装新版本时自动识别并沿用旧版安装目录，覆盖旧程序文件，保留已下载的 GPU 加速包
+
+### 1.3.3 macOS 更新内容
+
+- OCR 固定使用 Apple Silicon 的 CoreML GPU 路径，不再查询供电状态或显卡型号
+- 修复 macOS 源码环境下 OCR 组件已安装却被误报缺失的问题
 
 ### 1.3.1 更新内容
 

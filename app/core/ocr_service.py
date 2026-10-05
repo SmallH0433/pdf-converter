@@ -6,7 +6,7 @@ GPU 加速包可按需安装多个（NVIDIA CUDA 与 DirectML 互存），开始
 
 - NVIDIA（Windows/Linux）：CUDA —— 加速包装到 ocr_modules/（约 1.1GB）
 - AMD / Intel / 高通（Windows 10+，含核显）：DirectML —— 装到 ocr_modules_dml/（约 250MB）
-- 苹果 Mac（源码运行）：CoreML —— onnxruntime 官方 macOS 版自带，无需安装
+- Apple Silicon Mac：固定使用 CoreML GPU，无需检测供电或安装加速包
 - 华为海思（麒麟/马良/Ascend）：ONNX Runtime 无可用桌面后端，识别后明确提示；
   华为 Windows 笔记本的实际显卡是 Intel/AMD，由 DirectML 覆盖
 
@@ -255,6 +255,11 @@ def _pkg_exists(name: str) -> bool:
 
 def ocr_available() -> tuple[bool, str]:
     """检查 OCR 组件是否就绪，返回 (是否可用, 不可用原因)。纯文件检测。"""
+    if _apple_silicon():
+        from importlib.util import find_spec
+        return ((True, "") if all(find_spec(name) is not None
+                               for name in ('rapidocr', 'cv2', 'numpy'))
+                else (False, _NOT_INSTALLED))
     if _pkg_exists('rapidocr') and _pkg_exists('cv2') and _pkg_exists('numpy'):
         return True, ""
     return False, _NOT_INSTALLED
@@ -334,12 +339,18 @@ def _backend_from_loaded_ort() -> str:
     return 'cpu'
 
 
+def _apple_silicon() -> bool:
+    return platform.system() == 'Darwin' and platform.machine() == 'arm64'
+
+
 def _planned_backend() -> str:
     """只按文件、硬件与供电状态选择后端，不导入 onnxruntime。
 
     Intel/AMD/高通机器即使残留 CUDA 文件也应优先 DirectML；否则一旦先导入
     CUDA flavor，当前进程便无法再切换到 DirectML flavor。
     """
+    if _apple_silicon():
+        return 'coreml'
     cuda, dml = _cuda_installed(), _directml_installed()
     if dml and not has_nvidia_gpu():
         return 'directml'
@@ -360,6 +371,8 @@ def best_backend() -> str:
     插电时优先 CUDA（独显性能最高）；离电且装有 DirectML 时改走 DirectML——
     DirectML 默认使用当前显示输出 GPU，独显直连用独显、混合输出用核显，更省电。
     """
+    if _apple_silicon():
+        return 'coreml'
     if _engine is not None:
         return _backend_from_loaded_ort()  # onnxruntime flavor 已锁定
     if 'onnxruntime' in sys.modules:
@@ -394,6 +407,8 @@ def backend_name() -> str:
     引擎创建前只展示计划后端，不能为刷新界面而导入 ORT。否则用户在界面中
     安装 DirectML 前，内置 CUDA/CPU flavor 就会被永久锁定到当前进程。
     """
+    if _apple_silicon():
+        return 'GPU (CoreML)'
     if _active_backend:
         return _BACKEND_NAMES[_active_backend]
     if 'onnxruntime' in sys.modules:
@@ -536,13 +551,15 @@ def get_engine():
                 'coreml': 'EngineConfig.onnxruntime.use_coreml',
             }.get(backend)
             params = {provider_key: True} if provider_key else None
-            _engine = RapidOCR(params=params)
+            if _apple_silicon():
+                params['EngineConfig.onnxruntime.coreml_ep_cfg.MLComputeUnits'] = 'CPUAndGPU'
+            engine = RapidOCR(params=params)
             # get_available_providers() 仅表示编译进包，依赖 DLL 缺失时创建会话仍会
             # 回退 CPU；以实际会话采用的首选 provider 作为最终后端。
             first_providers = []
             for part_name in ('text_det', 'text_cls', 'text_rec'):
                 try:
-                    part = getattr(_engine, part_name)
+                    part = getattr(engine, part_name)
                     first_providers.append(part.session.session.get_providers()[0])
                 except (AttributeError, IndexError):
                     continue
@@ -551,11 +568,15 @@ def get_engine():
             first_provider = (first_providers[0] if first_providers
                               and len(set(first_providers)) == 1
                               else 'CPUExecutionProvider')
-            _active_backend = {
+            actual_backend = {
                 'CUDAExecutionProvider': 'cuda',
                 'DmlExecutionProvider': 'directml',
                 'CoreMLExecutionProvider': 'coreml',
             }.get(first_provider, 'cpu')
+            if _apple_silicon() and actual_backend != 'coreml':
+                raise RuntimeError('Apple Silicon OCR 无法使用 CoreML GPU，请检查系统与推理组件')
+            _engine = engine
+            _active_backend = actual_backend
     return _engine
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import platform
 
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QVBoxLayout, QWidget
 
@@ -89,19 +90,22 @@ class OcrPage(QWidget):
         self._refresh_engine_ui()
 
     # ---- 引擎状态 / GPU 加速一键安装 ----
-    _POWER_NAMES = {'ac': '插电', 'battery': '离电（电池）', 'unknown': '未知/台式机'}
-
     def _refresh_engine_ui(self):
         ok, reason = ocr_service.ocr_available()
         if not ok:
             self.engine_label.setText(reason)
         else:
-            gpus = '、'.join(ocr_service.gpu_names()) or '未检测到'
-            power = self._POWER_NAMES[ocr_service.power_state()]
-            self.engine_label.setText(
-                f"OCR 引擎：RapidOCR 中文模型 · 推理后端：{ocr_service.backend_name()}"
-                f" · 显卡：{gpus} · 当前供电：{power}"
-                f"（装有多个加速后端时，开始任务时按供电状态自动选择最佳 GPU）")
+            if platform.system() == 'Darwin' and platform.machine() == 'arm64':
+                self.engine_label.setText(
+                    "OCR 引擎：RapidOCR 中文模型 · Apple Silicon GPU (CoreML)")
+            else:
+                gpus = '、'.join(ocr_service.gpu_names()) or '未检测到'
+                power = {'ac': '插电', 'battery': '离电（电池）',
+                         'unknown': '未知/台式机'}[ocr_service.power_state()]
+                self.engine_label.setText(
+                    f"OCR 引擎：RapidOCR 中文模型 · 推理后端：{ocr_service.backend_name()}"
+                    f" · 显卡：{gpus} · 当前供电：{power}"
+                    f"（装有多个加速后端时，开始任务时按供电状态自动选择最佳 GPU）")
         # 重建加速包安装按钮（可装多个后端）
         while self.accel_btn_row.count() > 1:
             item = self.accel_btn_row.takeAt(0)

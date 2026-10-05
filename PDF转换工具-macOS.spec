@@ -5,7 +5,7 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.3.3"
 
 datas = [("assets/branding/pdf-converter-icon-512.png", "assets/branding")]
 binaries = []
