@@ -5,7 +5,7 @@ Windows/Linux 保留 FluentWindow；macOS 使用原生 QMainWindow 标题栏、�
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -34,7 +34,7 @@ from qfluentwidgets import (
 
 import importlib
 
-from .macos_ui import IS_MACOS
+from .macos_ui import IS_MACOS, configure_liquid_glass_window
 
 # 页面类延迟导入：启动时只实例化首页，其余页面首次进入时才创建，
 # 避免阅读器/OCR/书签等重依赖（PyMuPDF、numpy 等）拖慢启动。
@@ -170,10 +170,13 @@ class MacMainWindow(QMainWindow):
 
         self.sidebar = QFrame(central)
         self.sidebar.setObjectName("macSidebar")
-        self.sidebar.setFixedWidth(220)
+        self.sidebar.setProperty("macMaterial", "sidebar")
+        self.sidebar.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.sidebar.setAutoFillBackground(False)
+        self.sidebar.setFixedWidth(236)
         sidebar_layout = QVBoxLayout(self.sidebar)
-        sidebar_layout.setContentsMargins(12, 16, 12, 14)
-        sidebar_layout.setSpacing(8)
+        sidebar_layout.setContentsMargins(14, 18, 14, 14)
+        sidebar_layout.setSpacing(10)
 
         sidebar_title = QLabel("PDF 工具", self.sidebar)
         sidebar_title.setObjectName("macSidebarTitle")
@@ -186,13 +189,13 @@ class MacMainWindow(QMainWindow):
         self.sidebar_list = QListWidget(self.sidebar)
         self.sidebar_list.setObjectName("macSidebarList")
         self.sidebar_list.setFrameShape(QFrame.Shape.NoFrame)
-        self.sidebar_list.setIconSize(QSize(19, 19))
+        self.sidebar_list.setIconSize(QSize(20, 20))
         self.sidebar_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.sidebar_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         for route, _attribute, _page_type, icon, title, _eager in PAGE_SPECS:
             item = QListWidgetItem(icon.icon(), title)
             item.setData(Qt.ItemDataRole.UserRole, route)
-            item.setSizeHint(QSize(190, 38))
+            item.setSizeHint(QSize(204, 42))
             self.sidebar_list.addItem(item)
         sidebar_layout.addWidget(self.sidebar_list, 1)
 
@@ -202,6 +205,7 @@ class MacMainWindow(QMainWindow):
 
         self.content_stack = QStackedWidget(central)
         self.content_stack.setObjectName("macContentStack")
+        self.content_stack.setProperty("macMaterial", "content")
         for _route, attribute, _spec, _icon, _title, _eager in PAGE_SPECS:
             self.content_stack.addWidget(getattr(self, attribute))
 
@@ -217,6 +221,9 @@ class MacMainWindow(QMainWindow):
         self._polish_pages()
         self._apply_appearance()
         qconfig.themeChanged.connect(self._apply_appearance)
+        # Native NSViews exist only after Qt has completed window creation.
+        QTimer.singleShot(
+            0, lambda: configure_liquid_glass_window(self, self.sidebar))
 
     def _create_native_menus(self):
         file_menu = self.menuBar().addMenu("文件")
@@ -245,72 +252,85 @@ class MacMainWindow(QMainWindow):
         """对单个真实页面套用 macOS 外观（占位页跳过；懒加载页面在创建时调用）。"""
         layout = page.layout()
         if layout is not None and page is not self.home_page:
-            layout.setContentsMargins(30, 24, 30, 28)
-            layout.setSpacing(12)
+            layout.setContentsMargins(34, 28, 34, 32)
+            layout.setSpacing(14)
         for card in page.findChildren(CardWidget):
-            card.setBorderRadius(12)
+            card.setBorderRadius(18)
         if page is not self.home_page:
             labels = page.findChildren(StrongBodyLabel)
             if labels:
                 labels[0].setObjectName("macPageTitle")
                 font = QFont(labels[0].font())
-                font.setPointSize(20)
+                font.setPointSize(22)
                 font.setWeight(QFont.Weight.DemiBold)
                 labels[0].setFont(font)
 
     def _apply_appearance(self, *_args):
         dark = isDarkTheme()
-        sidebar = "#242426" if dark else "#ECECEE"
-        content = "#1C1C1E" if dark else "#F5F5F7"
-        border = "#3A3A3C" if dark else "#D1D1D6"
+        content = "#18181A" if dark else "#F5F5F7"
+        card = "rgba(255, 255, 255, 16)" if dark else "rgba(255, 255, 255, 210)"
+        card_hover = "rgba(255, 255, 255, 24)" if dark else "rgba(255, 255, 255, 242)"
+        border = "rgba(255, 255, 255, 24)" if dark else "rgba(0, 0, 0, 20)"
         text = "#F5F5F7" if dark else "#1D1D1F"
         secondary = "#A1A1A6" if dark else "#6E6E73"
-        hover = "#353537" if dark else "#E1E1E4"
-        selected = "#3A3A3C" if dark else "#D8D8DC"
+        hover = "rgba(255, 255, 255, 18)" if dark else "rgba(255, 255, 255, 125)"
+        selected = "rgba(255, 255, 255, 36)" if dark else "rgba(255, 255, 255, 205)"
         self.setStyleSheet(f"""
-            QMainWindow#macMainWindow {{ background: {content}; }}
-            QWidget#macCentralWidget, QStackedWidget#macContentStack {{
+            QMainWindow#macMainWindow, QWidget#macCentralWidget {{
+                background: transparent;
+            }}
+            QStackedWidget#macContentStack {{
                 background: {content};
             }}
             QFrame#macSidebar {{
-                background: {sidebar};
+                background: transparent;
                 border: none;
-                border-right: 1px solid {border};
             }}
             QLabel#macSidebarTitle {{
                 color: {text};
-                font-size: 15px;
+                font-size: 17px;
                 font-weight: 600;
-                padding: 2px 8px 8px 8px;
+                padding: 4px 10px 8px 10px;
             }}
             QLabel#macSidebarSection {{
                 color: {secondary};
                 font-size: 11px;
                 font-weight: 600;
-                padding: 2px 8px 0 8px;
+                padding: 4px 10px 0 10px;
             }}
             QLabel#macSidebarFooter {{
                 color: {secondary};
                 font-size: 11px;
-                padding: 6px 8px;
+                padding: 8px 10px;
             }}
             QListWidget#macSidebarList {{
                 background: transparent;
                 border: none;
                 outline: none;
                 color: {text};
-                font-size: 13px;
+                font-size: 14px;
             }}
             QListWidget#macSidebarList::item {{
-                border: none;
-                border-radius: 7px;
-                padding: 0 10px;
-                margin: 1px 0;
+                border: 1px solid transparent;
+                border-radius: 12px;
+                padding: 0 12px;
+                margin: 2px 0;
             }}
             QListWidget#macSidebarList::item:hover {{ background: {hover}; }}
             QListWidget#macSidebarList::item:selected {{
                 background: {selected};
+                border: 1px solid {border};
                 color: {text};
+            }}
+            CardWidget {{
+                background: {card};
+                border: 1px solid {border};
+                border-radius: 18px;
+            }}
+            CardWidget:hover {{ background: {card_hover}; }}
+            StrongBodyLabel#macPageTitle {{
+                color: {text};
+                padding-bottom: 4px;
             }}
         """)
 

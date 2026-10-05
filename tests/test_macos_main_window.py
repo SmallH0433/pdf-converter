@@ -29,6 +29,12 @@ class MacMainWindowTests(unittest.TestCase):
         self.assertEqual(self.window.sidebar_list.count(), 7)
         self.assertEqual(self.window.content_stack.count(), 7)
         self.assertTrue(self.window.sidebar_action.isChecked())
+        self.assertEqual(self.window.sidebar.property("macMaterial"), "sidebar")
+        self.assertEqual(self.window.content_stack.property("macMaterial"), "content")
+        self.assertTrue(
+            self.window.sidebar.testAttribute(
+                Qt.WidgetAttribute.WA_TranslucentBackground))
+        self.assertEqual(self.window.sidebar_list.item(0).sizeHint().height(), 42)
 
     def test_route_navigation_changes_sidebar_and_content_together(self):
         self.window._navigate("ocrPage")
