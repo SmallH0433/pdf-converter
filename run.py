@@ -17,6 +17,15 @@ def resource_path(*parts: str) -> Path:
 
 
 def main():
+    if "--verify-ocr" in sys.argv:
+        import numpy as np
+        from app.core import ocr_service
+
+        engine = ocr_service.get_engine()
+        engine(np.full((256, 256, 3), 255, dtype=np.uint8))
+        print(f"OCR self-test passed: {ocr_service.backend_name()}")
+        return
+
     app = QApplication(sys.argv)
     app.setApplicationName("PDF 转换工具")
     app.setWindowIcon(

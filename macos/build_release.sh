@@ -20,6 +20,7 @@ export PYINSTALLER_CONFIG_DIR="$PROJECT_DIR/.pyinstaller-cache"
 
 codesign --force --deep --sign - "$PROJECT_DIR/dist/$APP_NAME"
 codesign --verify --deep --strict --verbose=2 "$PROJECT_DIR/dist/$APP_NAME"
+"$PROJECT_DIR/dist/$APP_NAME/Contents/MacOS/PDF转换工具" --verify-ocr
 
 rm -rf "$STAGING_DIR"
 mkdir -p "$STAGING_DIR"
