@@ -50,10 +50,13 @@ def configure_liquid_glass_window(window, sidebar) -> bool:
         native_window.setStyleMask_(
             native_window.styleMask()
             | AppKit.NSWindowStyleMaskFullSizeContentView)
-        native_window.setTitlebarAppearsTransparent_(True)
+        # Keep the traffic-light/title region on the native window material.
+        # A clear NSWindow background makes that entire strip show the desktop
+        # through it on macOS 27, which is not the intended Liquid Glass layer.
+        native_window.setTitlebarAppearsTransparent_(False)
         native_window.setToolbarStyle_(AppKit.NSWindowToolbarStyleUnified)
-        native_window.setOpaque_(False)
-        native_window.setBackgroundColor_(AppKit.NSColor.clearColor())
+        native_window.setOpaque_(True)
+        native_window.setBackgroundColor_(AppKit.NSColor.windowBackgroundColor())
 
         effect = AppKit.NSVisualEffectView.alloc().initWithFrame_(
             native_sidebar_view.bounds())
