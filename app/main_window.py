@@ -189,7 +189,7 @@ class MacMainWindow(QMainWindow):
         self.sidebar_list.setIconSize(QSize(19, 19))
         self.sidebar_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.sidebar_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        for route, _attribute, _page_type, icon, title in PAGE_SPECS:
+        for route, _attribute, _page_type, icon, title, _eager in PAGE_SPECS:
             item = QListWidgetItem(icon.icon(), title)
             item.setData(Qt.ItemDataRole.UserRole, route)
             item.setSizeHint(QSize(190, 38))

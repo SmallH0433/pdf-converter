@@ -20,7 +20,8 @@ class MacMainWindowTests(unittest.TestCase):
         self.window = MainWindow()
 
     def tearDown(self):
-        self.window.reader_page.stop_workers()
+        if hasattr(self.window.reader_page, "stop_workers"):
+            self.window.reader_page.stop_workers()
         self.window.deleteLater()
 
     def test_uses_native_mac_window_with_all_pages(self):
@@ -31,7 +32,9 @@ class MacMainWindowTests(unittest.TestCase):
 
     def test_route_navigation_changes_sidebar_and_content_together(self):
         self.window._navigate("ocrPage")
-        self.assertIs(self.window.content_stack.currentWidget(), self.window.ocr_page)
+        shell = self.window._page_shells["ocr_page"]
+        self.assertIs(self.window.content_stack.currentWidget(), shell)
+        self.assertIs(shell.layout().itemAt(0).widget(), self.window.ocr_page)
         self.assertEqual(
             self.window.sidebar_list.currentItem().data(Qt.ItemDataRole.UserRole),
             "ocrPage",
