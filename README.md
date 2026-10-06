@@ -1,6 +1,6 @@
 # PDF 转换工具
 
-一个基于 PySide6 的跨平台桌面 PDF 工具箱，支持扫描版 PDF 的 OCR 文字识别与多后端 GPU 加速。Windows 使用 Fluent Design，macOS 使用原生窗口与 Apple 风格界面。
+一个跨平台 PDF 工具箱，支持扫描版 PDF 的 OCR 文字识别与多后端 GPU 加速。Windows 与 macOS 使用 PySide6 桌面端，Android 与 iOS/iPadOS 提供原生阅读、手写标注和搜索界面。
 
 ## 功能
 
@@ -28,6 +28,8 @@ LLM 只判断从 PDF 提取的候选标题，不自行生成页码或改写文�
 - Windows 10 / 11：[下载 PDF-Converter-Setup-1.2.16.exe](https://github.com/SmallH0433/pdf-converter/releases/download/v1.2.16/PDF-Converter-Setup-1.2.16.exe)
 - macOS 13+（Apple Silicon）：[下载 PDF-Converter-macOS-arm64-1.3.3.dmg](https://github.com/SmallH0433/pdf-converter/releases/download/v1.3.3/PDF-Converter-macOS-arm64-1.3.3.dmg)
 - Android 8.0+：[下载 PDF-Converter-Android-1.0.1.apk](https://github.com/SmallH0433/pdf-converter/releases/download/v1.2.2/PDF-Converter-Android-1.0.1.apk)
+
+iOS/iPadOS 16+ 原生版目前提供源码工程，尚未发布 App Store 或 IPA 安装包；构建方式见下方“iOS / iPadOS”说明。
 
 macOS 包目前使用临时签名、尚未经过 Apple 公证；如果系统首次打开时拦截，请在 Finder 中右键应用并选择「打开」。
 
@@ -162,7 +164,7 @@ OCR 默认使用 CPU 即可用；在「PDF OCR」页面可一键安装 GPU 加�
 
 ## 手写笔输入（按操作系统自动选择原生 API）
 
-阅读器的手写标注通过 Qt 手写板事件接入各系统的原生手写 API，程序启动时按当前操作系统自动选择：
+阅读器的手写标注按平台接入原生手写 API：桌面端通过 Qt 手写板事件，Android 使用 `MotionEvent`，iOS/iPadOS 使用 UIKit/PDFKit 触控事件。
 
 | 操作系统 | 手写后端 | 压感 / 橡皮擦端 |
 |---|---|---|
@@ -170,7 +172,7 @@ OCR 默认使用 CPU 即可用；在「PDF OCR」页面可一键安装 GPU 加�
 | Android | Android Stylus / MotionEvent（S Pen 等） | 支持；手指专用于滚动翻页 |
 | macOS | NSEvent 数位板事件（外接数位板） | 支持 |
 | Linux | X11 / Wayland 数位板事件（libinput） | 支持 |
-| iPadOS | Apple Pencil | PySide6 无法在 iPadOS 运行，不支持 |
+| iOS / iPadOS | Apple Pencil / UIKit 触控 | 支持压感；也可使用手指书写 |
 
 桌面平台鼠标也可书写（无压感）；当前生效的后端显示在阅读器页面底部状态栏。
 
@@ -199,6 +201,12 @@ python -m venv .venv
 ```bash
 ./macos/build_release.sh
 ```
+
+### iOS / iPadOS 16+
+
+iOS 版是基于 UIKit 与 PDFKit 的原生工程，不需要 Python 环境。使用 Xcode 打开 `ios/PDFReader.xcodeproj`，选择共享的 `PDFReader` Scheme 后即可在 iPhone/iPad 模拟器运行；真机运行或归档前需在 Signing & Capabilities 中选择自己的开发团队。
+
+它支持文件 App 打开 PDF、Apple Pencil 压感手写、橡皮擦、撤销、留言、全文搜索、标注选择与变换、保存/另存，以及返回主页。iOS 26 使用原生 Liquid Glass 悬浮控制层，较早系统自动回退为系统材质；iPadOS 和 Android 平板横屏都会自动切换为左侧竖向工具栏。更多说明见 `ios/README.md`。
 
 ## 打包
 
