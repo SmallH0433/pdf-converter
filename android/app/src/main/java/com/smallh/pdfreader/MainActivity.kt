@@ -143,8 +143,14 @@ class MainActivity : AppCompatActivity() {
 
     private fun handleViewIntent(intent: android.content.Intent?) {
         if (intent?.action == android.content.Intent.ACTION_VIEW) {
-            intent.data?.let { openPdf(it) }
+            intent.data?.let { openPdf(it, intent.getStringExtra(EXTRA_OPEN_FEATURE)) }
         }
+    }
+
+    companion object {
+        const val EXTRA_OPEN_FEATURE = "com.smallh.pdfreader.OPEN_FEATURE"
+        const val FEATURE_EXTRACT = "extract"
+        const val FEATURE_BOOKMARKS = "bookmarks"
     }
 
     // ---- UI ----
@@ -430,9 +436,9 @@ class MainActivity : AppCompatActivity() {
                 isVerticalScrollBarEnabled = false
                 isFillViewport = true
                 setBackgroundColor(colorOf(R.color.hi_surface))
-                addView(buttons, ScrollView.LayoutParams(
-                    ScrollView.LayoutParams.MATCH_PARENT,
-                    ScrollView.LayoutParams.WRAP_CONTENT))
+                addView(buttons, FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT))
             }
         } else {
             HorizontalScrollView(this).apply {
@@ -481,9 +487,10 @@ class MainActivity : AppCompatActivity() {
     // ---- 文件 ----
 
     private fun returnHome() {
-        if (session == null) return
+        if (session == null) { finish(); return }
         if (!dirty) {
             closePdf()
+            finish()
             return
         }
         AlertDialog.Builder(this)
@@ -500,6 +507,7 @@ class MainActivity : AppCompatActivity() {
                     } ?: error("无法写入原文件")
                     dirty = false
                     closePdf()
+                    finish()
                 } catch (e: Exception) {
                     AlertDialog.Builder(this)
                         .setTitle("保存失败")
@@ -508,7 +516,7 @@ class MainActivity : AppCompatActivity() {
                         .show()
                 }
             }
-            .setNegativeButton("放弃修改") { _, _ -> closePdf() }
+            .setNegativeButton("放弃修改") { _, _ -> closePdf(); finish() }
             .setNeutralButton("取消", null)
             .show()
     }
@@ -536,7 +544,7 @@ class MainActivity : AppCompatActivity() {
         pageLabel.text = "0 / 0"
     }
 
-    private fun openPdf(uri: Uri) {
+    private fun openPdf(uri: Uri, feature: String? = null) {
         confirmDiscard {
             android.util.Log.i("PdfReader", "openPdf: $uri")
             runCatching {
@@ -561,6 +569,10 @@ class MainActivity : AppCompatActivity() {
                 pageView.post { pageView.showPage(0) }
                 updateStatus()
                 updatePageLabel()
+                when (feature) {
+                    FEATURE_EXTRACT -> showExtractPreview()
+                    FEATURE_BOOKMARKS -> showBookmarkPreview()
+                }
             } catch (e: Exception) {
                 android.util.Log.e("PdfReader", "openPdf failed", e)
                 toast("打开失败：${e.message}")
@@ -568,20 +580,26 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private data class BookmarkDraft(val title: EditText, val page: EditText)
+    private data class BookmarkDraft(val title: EditText, val page: EditText, val level: EditText)
 
     private fun showBookmarkPreview() {
         val active = session ?: run { toast("请先打开 PDF"); return }
         val detected = runCatching {
             synchronized(active.docLock) {
                 val stripper = PDFTextStripper()
-                (0 until active.pageCount).mapNotNull { page ->
+                val numbered = Regex("^(第[一二三四五六七八九十百千万0-9]+[章节篇部]|Chapter\\s+[0-9]+|[0-9]+(\\.[0-9]+)*\\s+)", RegexOption.IGNORE_CASE)
+                val dotted = Regex("^[0-9]+(\\.[0-9]+)*")
+                (0 until active.pageCount).flatMap { page ->
                     stripper.startPage = page + 1
                     stripper.endPage = page + 1
-                    stripper.getText(active.doc).lineSequence().map { it.trim() }.firstOrNull { line ->
-                        line.length in 3..100 && (line.matches(Regex("^(第.{1,12}[章节篇部].*|[0-9一二三四五六七八九十]+[、.． ]+.{2,})$")) ||
-                            line.matches(Regex("^[0-9]+(\\.[0-9]+){0,3}\\s+.{2,70}$")))
-                    }?.let { page to it }
+                    stripper.getText(active.doc).lineSequence().map { it.trim() }
+                        .filter { line -> line.isNotEmpty() && line.length <= 80 &&
+                            (numbered.containsMatchIn(line) || (line.length <= 24 &&
+                                !line.contains('。') && !line.contains('，') && !line.contains(','))) }
+                        .take(3).map { title ->
+                            val level = dotted.find(title)?.value?.count { it == '.' }?.plus(1) ?: 1
+                            Triple(page, title, level.coerceIn(1, 6))
+                        }.toList()
                 }
             }
         }.getOrElse { toast("目录识别失败：${it.message}"); return }
@@ -589,10 +607,16 @@ class MainActivity : AppCompatActivity() {
 
         val drafts = mutableListOf<BookmarkDraft>()
         val rows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        fun appendRow(title: String, page: Int) {
+        fun appendRow(title: String, page: Int, level: Int = 1) {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(12), dp(4), dp(12), dp(4))
+            }
+            val thumbnail = ImageView(this).apply {
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                setBackgroundColor(Color.WHITE)
+                setImageBitmap(runCatching { active.renderPage((page - 1).coerceIn(0, active.pageCount - 1),
+                    dp(42), dp(58)) }.getOrNull())
             }
             val titleInput = EditText(this).apply {
                 setText(title); hint = "目录标题"; textSize = 14f; setSingleLine()
@@ -603,17 +627,24 @@ class MainActivity : AppCompatActivity() {
                 setText(page.toString()); hint = "页码"; textSize = 14f
                 inputType = InputType.TYPE_CLASS_NUMBER; gravity = Gravity.CENTER
                 setBackgroundResource(R.drawable.hi_input_bg)
-                layoutParams = LinearLayout.LayoutParams(dp(64), dp(46)).apply { marginStart = dp(8) }
+                layoutParams = LinearLayout.LayoutParams(dp(56), dp(46)).apply { marginStart = dp(6) }
+            }
+            val levelInput = EditText(this).apply {
+                setText(level.toString()); hint = "层级"; textSize = 14f
+                inputType = InputType.TYPE_CLASS_NUMBER; gravity = Gravity.CENTER
+                setBackgroundResource(R.drawable.hi_input_bg)
+                layoutParams = LinearLayout.LayoutParams(dp(48), dp(46)).apply { marginStart = dp(6) }
             }
             val remove = TextView(this).apply {
                 text = "删除"; setTextColor(colorOf(R.color.hi_brand_500)); gravity = Gravity.CENTER
                 setPadding(dp(8), 0, dp(4), 0)
             }
             remove.setOnClickListener { rows.removeView(row); drafts.removeAll { it.title === titleInput } }
-            row.addView(titleInput); row.addView(pageInput); row.addView(remove)
-            rows.addView(row); drafts.add(BookmarkDraft(titleInput, pageInput))
+            row.addView(thumbnail, LinearLayout.LayoutParams(dp(42), dp(58)).apply { marginEnd = dp(6) })
+            row.addView(titleInput); row.addView(pageInput); row.addView(levelInput); row.addView(remove)
+            rows.addView(row); drafts.add(BookmarkDraft(titleInput, pageInput, levelInput))
         }
-        detected.forEach { (page, title) -> appendRow(title, page + 1) }
+        detected.forEach { (page, title, level) -> appendRow(title, page + 1, level) }
         val scroller = ScrollView(this).apply { addView(rows) }
         val dialog = AlertDialog.Builder(this).setTitle("目录预览 · ${drafts.size} 项")
             .setView(scroller).setNeutralButton("添加", null).setNegativeButton("取消", null)
@@ -624,18 +655,25 @@ class MainActivity : AppCompatActivity() {
                 val items = drafts.mapNotNull { draft ->
                     val title = draft.title.text.toString().trim()
                     val page = draft.page.text.toString().toIntOrNull()?.minus(1)
-                    if (title.isNotEmpty() && page != null && page in 0 until active.pageCount) title to page else null
+                    val level = draft.level.text.toString().toIntOrNull()
+                    if (title.isNotEmpty() && page != null && page in 0 until active.pageCount &&
+                        level != null && level in 1..6) Triple(title, page, level) else null
                 }
                 if (items.isEmpty()) { toast("请至少保留一个有效目录项"); return@setOnClickListener }
                 runCatching {
                     synchronized(active.docLock) {
                         val outline = PDDocumentOutline()
-                        items.forEach { (title, page) ->
+                        val parents = mutableMapOf<Int, PDOutlineItem>()
+                        items.sortedBy { it.second }.forEach { (title, page, level) ->
                             val item = PDOutlineItem().apply {
                                 this.title = title
                                 destination = PDPageFitDestination().apply { setPage(active.doc.getPage(page)) }
                             }
-                            outline.addLast(item)
+                            val parent = parents[level - 1]
+                            if (level == 1 || parent == null) outline.addLast(item) else parent.addLast(item)
+                            item.openNode()
+                            parents[level] = item
+                            parents.keys.filter { it > level }.forEach(parents::remove)
                         }
                         outline.openNode()
                         active.doc.documentCatalog.documentOutline = outline
@@ -676,7 +714,7 @@ class MainActivity : AppCompatActivity() {
             card.addView(preview); card.addView(check)
             preview.setImageBitmap(runCatching { active.renderPage(page, width, height) }.getOrNull())
             grid.addView(card, GridLayout.LayoutParams().apply {
-                width = 0; columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
+                this.width = 0; columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
                 setMargins(dp(4), dp(4), dp(4), dp(4))
             })
         }
@@ -702,6 +740,11 @@ class MainActivity : AppCompatActivity() {
                     if (indexes.isEmpty()) { toast("请输入有效页码范围"); return@setOnClickListener }
                     checks.forEachIndexed { index, check -> check.isChecked = index + 1 in indexes }
                 }
+            })
+            addView(TextView(this@MainActivity).apply {
+                text = "全选"; gravity = Gravity.CENTER; setTextColor(colorOf(R.color.hi_brand_500))
+                setPadding(dp(8), 0, dp(4), 0)
+                setOnClickListener { checks.forEach { it.isChecked = true } }
             })
         }
         val content = LinearLayout(this).apply {

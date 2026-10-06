@@ -10,8 +10,8 @@ android {
         applicationId = "com.smallh.pdfreader"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "1.0.2"
+        versionCode = 4
+        versionName = "1.1.0"
     }
 
     buildTypes {
@@ -31,4 +31,5 @@ dependencies {
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
 }
