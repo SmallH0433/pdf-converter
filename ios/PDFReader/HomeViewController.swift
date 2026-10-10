@@ -1,5 +1,7 @@
 import AVFoundation
 import PDFKit
+import Photos
+import PhotosUI
 import UIKit
 import UniformTypeIdentifiers
 import Vision
@@ -205,14 +207,38 @@ final class HomeViewController: UIViewController, UIDocumentPickerDelegate {
         switch feature {
         case .reader:
             openReader(url: nil)
-        case .pdfToImages, .extract, .imagesToPDF, .bookmarks, .ocr:
+        case .imagesToPDF:
+            presentImageSourceOptions()
+        case .pdfToImages, .extract, .bookmarks, .ocr:
             pendingFeature = feature
-            let types: [UTType] = feature == .imagesToPDF ? [.image] : [.pdf]
-            let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: false)
-            picker.allowsMultipleSelection = feature == .imagesToPDF
+            let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.pdf], asCopy: false)
             picker.delegate = self
             present(picker, animated: true)
         }
+    }
+
+    private func presentImageSourceOptions() {
+        let alert = UIAlertController(title: "选择图片", message: "请选择图片来源", preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "从相册选择", style: .default) { [weak self] _ in
+            var configuration = PHPickerConfiguration(photoLibrary: .shared())
+            configuration.filter = .images
+            configuration.selectionLimit = 0
+            configuration.selection = .ordered
+            let picker = PHPickerViewController(configuration: configuration)
+            picker.delegate = self
+            self?.present(picker, animated: true)
+        })
+        alert.addAction(UIAlertAction(title: "从文件中选择", style: .default) { [weak self] _ in
+            guard let self else { return }
+            self.pendingFeature = .imagesToPDF
+            let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.image], asCopy: true)
+            picker.allowsMultipleSelection = true
+            picker.delegate = self
+            self.present(picker, animated: true)
+        })
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        anchorPopover(alert)
+        present(alert, animated: true)
     }
 
     private func openReader(url: URL?) {
@@ -254,7 +280,7 @@ final class HomeViewController: UIViewController, UIDocumentPickerDelegate {
                 try data.write(to: output, options: .atomic)
                 files.append(output)
             }
-            export(files, message: "已生成 (files.count) 张 PNG 图片")
+            presentImageOutputOptions(files, message: "已生成 \(files.count) 张 PNG 图片")
         } catch { showInfo(title: "导出失败", message: error.localizedDescription) }
     }
 
@@ -464,10 +490,108 @@ final class HomeViewController: UIViewController, UIDocumentPickerDelegate {
         present(picker, animated: true)
     }
 
+    private func presentImageOutputOptions(_ urls: [URL], message: String) {
+        guard !urls.isEmpty else {
+            showInfo(title: "没有可保存的图片", message: "PDF 中没有成功生成图片。")
+            return
+        }
+        let alert = UIAlertController(title: "保存图片", message: message, preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "保存到相册", style: .default) { [weak self] _ in
+            self?.saveImagesToPhotoLibrary(urls)
+        })
+        alert.addAction(UIAlertAction(title: "保存到文件", style: .default) { [weak self] _ in
+            self?.export(urls, message: message)
+        })
+        alert.addAction(UIAlertAction(title: "直接分享", style: .default) { [weak self] _ in
+            self?.share(urls)
+        })
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        anchorPopover(alert)
+        present(alert, animated: true)
+    }
+
+    private func saveImagesToPhotoLibrary(_ urls: [URL]) {
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] status in
+            guard status == .authorized || status == .limited else {
+                DispatchQueue.main.async {
+                    self?.showInfo(title: "无法保存到相册", message: "请在系统设置中允许“PDF阅读器”添加照片。")
+                }
+                return
+            }
+            PHPhotoLibrary.shared().performChanges {
+                urls.forEach { PHAssetChangeRequest.creationRequestForAssetFromImage(atFileURL: $0) }
+            } completionHandler: { success, error in
+                DispatchQueue.main.async {
+                    if success {
+                        self?.showInfo(title: "保存完成", message: "已将 \(urls.count) 张图片保存到相册。")
+                    } else {
+                        self?.showInfo(title: "保存失败", message: error?.localizedDescription ?? "无法写入相册。")
+                    }
+                }
+            }
+        }
+    }
+
+    private func share(_ urls: [URL]) {
+        let controller = UIActivityViewController(activityItems: urls, applicationActivities: nil)
+        anchorPopover(controller)
+        present(controller, animated: true)
+    }
+
+    private func anchorPopover(_ controller: UIViewController) {
+        guard let popover = controller.popoverPresentationController else { return }
+        popover.sourceView = view
+        popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1)
+        popover.permittedArrowDirections = []
+    }
+
     private func showInfo(title: String, message: String) {
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "确定", style: .default))
         present(alert, animated: true)
+    }
+}
+
+extension HomeViewController: PHPickerViewControllerDelegate {
+    func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+        picker.dismiss(animated: true)
+        guard !results.isEmpty else { return }
+
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SelectedImages_\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        } catch {
+            showInfo(title: "无法读取相册", message: error.localizedDescription)
+            return
+        }
+
+        var orderedURLs = Array<URL?>(repeating: nil, count: results.count)
+        var remaining = results.count
+        for (index, result) in results.enumerated() {
+            result.itemProvider.loadFileRepresentation(forTypeIdentifier: UTType.image.identifier) { [weak self] sourceURL, _ in
+                var copiedURL: URL?
+                if let sourceURL {
+                    let fileExtension = sourceURL.pathExtension.isEmpty ? "jpg" : sourceURL.pathExtension
+                    let destination = folder.appendingPathComponent(String(format: "image-%03d.%@", index + 1, fileExtension))
+                    do {
+                        try FileManager.default.copyItem(at: sourceURL, to: destination)
+                        copiedURL = destination
+                    } catch { }
+                }
+                DispatchQueue.main.async {
+                    orderedURLs[index] = copiedURL
+                    remaining -= 1
+                    guard remaining == 0, let self else { return }
+                    let urls = orderedURLs.compactMap { $0 }
+                    if urls.isEmpty {
+                        self.showInfo(title: "无法读取图片", message: "所选照片未能从相册载入，请重新选择。")
+                    } else {
+                        self.convertImagesToPDF(urls)
+                    }
+                }
+            }
+        }
     }
 }
 

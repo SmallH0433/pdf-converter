@@ -26,6 +26,8 @@
     <true/>
     <key>UISupportsDocumentBrowser</key>
     <true/>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>用于将 PDF 页面生成的图片保存到您的相册。</string>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>
