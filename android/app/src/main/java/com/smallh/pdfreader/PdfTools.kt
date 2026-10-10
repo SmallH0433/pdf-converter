@@ -1,5 +1,6 @@
 package com.smallh.pdfreader
 
+import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -9,8 +10,11 @@ import android.graphics.RectF
 import android.graphics.pdf.PdfDocument
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
+import android.provider.MediaStore
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
@@ -22,29 +26,77 @@ import kotlin.math.roundToInt
 
 /** 首页的文件转换工作。调用方应在后台线程运行这些方法。 */
 object PdfTools {
-    fun pdfToImages(context: Context, source: Uri, tree: Uri): Int =
+    /** 渲染 PDF 到 [outDir] 下的 PNG 文件，按页码命名并返回文件列表。 */
+    fun pdfToImages(context: Context, source: Uri, outDir: File): List<File> =
         withRenderer(context, source) { renderer ->
             require(renderer.pageCount > 0) { "PDF 没有页面" }
-            val folder = DocumentsContract.buildDocumentUriUsingTree(
-                tree, DocumentsContract.getTreeDocumentId(tree))
+            outDir.mkdirs()
+            val files = ArrayList<File>(renderer.pageCount)
             repeat(renderer.pageCount) { index ->
                 val bitmap = render(renderer, index)
                 try {
-                    val name = "page-%03d.png".format(index + 1)
-                    val output = DocumentsContract.createDocument(
-                        context.contentResolver, folder, "image/png", name)
-                        ?: error("无法在所选文件夹创建 $name")
-                    context.contentResolver.openOutputStream(output, "wt")?.use { stream ->
+                    val file = File(outDir, "page-%03d.png".format(index + 1))
+                    file.outputStream().use { stream ->
                         check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)) {
-                            "$name 写入失败"
+                            "${file.name} 写入失败"
                         }
-                    } ?: error("无法写入 $name")
+                    }
+                    files += file
                 } finally {
                     bitmap.recycle()
                 }
             }
-            renderer.pageCount
+            files
         }
+
+    /** 将 PNG 文件写入系统相册，Android 10 及以上无需存储权限。 */
+    fun saveImagesToGallery(context: Context, files: List<File>): Int {
+        val resolver = context.contentResolver
+        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        } else {
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        }
+        var saved = 0
+        files.forEach { file ->
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, file.name)
+                put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.Images.Media.RELATIVE_PATH,
+                        "${Environment.DIRECTORY_PICTURES}/PDF转换工具")
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+            }
+            val uri = resolver.insert(collection, values)
+                ?: error("无法创建相册条目 ${file.name}")
+            resolver.openOutputStream(uri, "wt")?.use { stream ->
+                file.inputStream().use { it.copyTo(stream) }
+            } ?: error("无法写入相册 ${file.name}")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                values.clear()
+                values.put(MediaStore.Images.Media.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+            }
+            saved++
+        }
+        return saved
+    }
+
+    /** 将 PNG 文件复制到用户选择的文件夹。 */
+    fun saveImagesToTree(context: Context, files: List<File>, tree: Uri): Int {
+        val folder = DocumentsContract.buildDocumentUriUsingTree(
+            tree, DocumentsContract.getTreeDocumentId(tree))
+        files.forEach { file ->
+            val output = DocumentsContract.createDocument(
+                context.contentResolver, folder, "image/png", file.name)
+                ?: error("无法在所选文件夹创建 ${file.name}")
+            context.contentResolver.openOutputStream(output, "wt")?.use { stream ->
+                file.inputStream().use { it.copyTo(stream) }
+            } ?: error("无法写入 ${file.name}")
+        }
+        return files.size
+    }
 
     fun imagesToPdf(context: Context, sources: List<Uri>, output: File) {
         val document = PdfDocument()

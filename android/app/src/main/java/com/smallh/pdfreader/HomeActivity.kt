@@ -1,11 +1,14 @@
 package com.smallh.pdfreader
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.content.res.ColorStateList
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.view.Gravity
@@ -17,10 +20,12 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.graphics.ColorUtils
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -40,7 +45,7 @@ class HomeActivity : AppCompatActivity() {
 
     private val worker = Executors.newSingleThreadExecutor()
     private var pendingFeature: Feature? = null
-    private var pendingPdfUri: Uri? = null
+    private var pendingImageFiles: List<File> = emptyList()
     private var pendingOutput: File? = null
 
     private val openPdf = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -48,22 +53,29 @@ class HomeActivity : AppCompatActivity() {
         pendingFeature = null
         if (uri != null && feature != null) onPdfChosen(feature, uri)
     }
+    private val pickAlbumImages = registerForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
+        if (uris.isNotEmpty()) convertImages(uris)
+    }
     private val openImages = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        if (uris.isNotEmpty()) {
-            val output = File(cacheDir, "images_${System.currentTimeMillis()}.pdf")
-            runPdfJob("正在合成图片", output, "图片合成.pdf") {
-                PdfTools.imagesToPdf(this, uris, output)
-            }
-        }
+        if (uris.isNotEmpty()) convertImages(uris)
     }
     private val chooseFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { tree ->
-        val source = pendingPdfUri
-        pendingPdfUri = null
-        if (tree != null && source != null) {
-            runJob("正在导出 PNG", {
-                val count = PdfTools.pdfToImages(this, source, tree)
+        val files = pendingImageFiles
+        pendingImageFiles = emptyList()
+        if (tree != null && files.isNotEmpty()) {
+            runJob("正在保存到文件夹", {
+                val count = PdfTools.saveImagesToTree(this, files, tree)
                 "$count 张 PNG 图片已保存到所选文件夹"
             })
+        }
+    }
+    private val writeStorage = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            saveImagesToGallery()
+        } else {
+            toast("未授予存储权限，无法保存到相册")
         }
     }
     private val createPdf = registerForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
@@ -84,14 +96,18 @@ class HomeActivity : AppCompatActivity() {
         pendingFeature = savedInstanceState?.getString("feature")?.let { name ->
             Feature.entries.firstOrNull { it.name == name }
         }
-        pendingPdfUri = savedInstanceState?.getString("source")?.let(Uri::parse)
+        pendingImageFiles = savedInstanceState?.getStringArrayList("images")
+            ?.map(::File) ?: emptyList()
         pendingOutput = savedInstanceState?.getString("output")?.let(::File)
         buildHome()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         pendingFeature?.let { outState.putString("feature", it.name) }
-        pendingPdfUri?.let { outState.putString("source", it.toString()) }
+        if (pendingImageFiles.isNotEmpty()) {
+            outState.putStringArrayList("images",
+                ArrayList(pendingImageFiles.map { it.absolutePath }))
+        }
         pendingOutput?.let { outState.putString("output", it.absolutePath) }
         super.onSaveInstanceState(outState)
     }
@@ -109,7 +125,7 @@ class HomeActivity : AppCompatActivity() {
     private fun select(feature: Feature) {
         when (feature) {
             Feature.READER -> startActivity(Intent(this, MainActivity::class.java))
-            Feature.IMAGES_TO_PDF -> openImages.launch(arrayOf("image/*"))
+            Feature.IMAGES_TO_PDF -> presentImageSourceOptions()
             else -> {
                 pendingFeature = feature
                 openPdf.launch(arrayOf("application/pdf"))
@@ -117,11 +133,35 @@ class HomeActivity : AppCompatActivity() {
         }
     }
 
+    private fun presentImageSourceOptions() {
+        AlertDialog.Builder(this).setTitle("选择图片")
+            .setItems(arrayOf("从相册选择", "从文件中选择")) { _, which ->
+                when (which) {
+                    0 -> pickAlbumImages.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    else -> openImages.launch(arrayOf("image/*"))
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun convertImages(uris: List<Uri>) {
+        val output = File(cacheDir, "images_${System.currentTimeMillis()}.pdf")
+        runPdfJob("正在合成图片", output, "图片合成.pdf") {
+            PdfTools.imagesToPdf(this, uris, output)
+        }
+    }
+
     private fun onPdfChosen(feature: Feature, uri: Uri) {
         when (feature) {
             Feature.PDF_TO_IMAGES -> {
-                pendingPdfUri = uri
-                chooseFolder.launch(null)
+                val dir = File(cacheDir, "exports/images_${System.currentTimeMillis()}")
+                runJob("正在导出 PNG", {
+                    val files = PdfTools.pdfToImages(this, uri, dir)
+                    pendingImageFiles = files
+                    null
+                }) { presentImageOutputOptions() }
             }
             Feature.EXTRACT, Feature.BOOKMARKS -> {
                 val intent = Intent(Intent.ACTION_VIEW, uri, this, MainActivity::class.java)
@@ -137,6 +177,49 @@ class HomeActivity : AppCompatActivity() {
             }
             else -> Unit
         }
+    }
+
+    private fun presentImageOutputOptions() {
+        val count = pendingImageFiles.size
+        if (count == 0) {
+            showError("没有可保存的图片", IllegalStateException("PDF 中没有成功生成图片。"))
+            return
+        }
+        AlertDialog.Builder(this).setTitle("已生成 $count 张 PNG 图片")
+            .setItems(arrayOf("保存到相册", "保存到文件", "直接分享")) { _, which ->
+                when (which) {
+                    0 -> saveImagesToGallery()
+                    1 -> chooseFolder.launch(null)
+                    else -> shareImages()
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun saveImagesToGallery() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                != PackageManager.PERMISSION_GRANTED) {
+            writeStorage.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            return
+        }
+        runJob("正在保存到相册", {
+            val count = PdfTools.saveImagesToGallery(this, pendingImageFiles)
+            "已将 $count 张图片保存到相册"
+        })
+    }
+
+    private fun shareImages() {
+        val uris = pendingImageFiles.map { file ->
+            FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        }
+        val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+            type = "image/png"
+            putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(intent, "分享 PNG 图片"))
     }
 
     private fun runPdfJob(title: String, output: File, exportName: String, job: () -> Unit) {

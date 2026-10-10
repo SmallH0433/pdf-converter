@@ -23,6 +23,9 @@
     <color name="hi_text_tertiary">#91959E</color>
     <color name="hi_brand_container">#E5ECFF</color>
 
+    <!-- 启动器图标背景（与 iOS 图标一致的蓝色） -->
+    <color name="ic_launcher_background">#1B5DFB</color>
+
     <!-- 触摸涟漪 -->
     <color name="hi_ripple">#1F1A1D26</color>
     <color name="hi_ripple_light">#33FFFFFF</color>
