@@ -4,8 +4,12 @@
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
 
-!define APP_VERSION "1.3.2"
+!define APP_VERSION "1.3.6"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\PDF转换工具"
+; 允许从独立构建目录打包，避免覆盖仍在运行的便携版。
+!ifndef APP_DIST_DIR
+!define APP_DIST_DIR "dist\PDF转换工具"
+!endif
 
 Name "PDF转换工具"
 OutFile "installer\PDF-Converter-Setup-${APP_VERSION}.exe"
@@ -81,7 +85,7 @@ copy_files:
     ; 对手动复制的旧程序也清理 1.2.2 遗留的错误 DLL
     Delete "$INSTDIR\_internal\icuuc.dll"
     Delete "$INSTDIR\_internal\icudt78.dll"
-    File /r "dist\PDF转换工具\*.*"
+    File /r "${APP_DIST_DIR}\*.*"
 
     WriteUninstaller "$INSTDIR\卸载 PDF转换工具.exe"
 

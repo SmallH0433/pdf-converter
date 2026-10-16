@@ -6,7 +6,7 @@
 
 | 功能 | 说明 |
 |---|---|
-| 阅读器 | 预览 PDF，手写笔压感标注（墨迹/橡皮擦）、留言便签，笔画框选/圈选后可移动、缩放、旋转、改色、删除，全文查找（扫描页可选 OCR），标注可写回原文件或另存 |
+| 阅读器 | 预览 PDF，滚轮上下滚动并在页首/页尾继续翻页，手写笔压感标注（墨迹/橡皮擦）、留言便签，笔画框选/圈选后可移动、缩放、旋转、改色、删除，全文查找（扫描页可选 OCR），标注可写回原文件或另存 |
 | PDF 转图片 | 支持 PNG / JPG / WEBP / BMP / TIFF，自定义 DPI 与页码范围，可打包为 ZIP |
 | 页码节选 | 勾选缩略图、输入页码范围或按目录章节快速选择，导出为新 PDF |
 | 目录/书签自动生成 | 根据标题字号、粗体和章节编号自动识别书签（如 `第1章` / `1.3`），预览删改后导出 |
@@ -23,11 +23,11 @@ LLM 只判断从 PDF 提取的候选标题，不自行生成页码或改写文�
 
 ## 安装
 
-从 [GitHub Releases](https://github.com/SmallH0433/pdf-converter/releases) 下载最新版本。macOS 当前版本为 **1.3.3**：
+从 [GitHub Releases](https://github.com/SmallH0433/pdf-converter/releases) 下载对应平台的最新版本：Windows **1.3.6**、macOS **1.3.4**、Android **1.2.0**。
 
-- Windows 10 / 11：[下载 PDF-Converter-Setup-1.2.16.exe](https://github.com/SmallH0433/pdf-converter/releases/download/v1.2.16/PDF-Converter-Setup-1.2.16.exe)
-- macOS 13+（Apple Silicon）：[下载 PDF-Converter-macOS-arm64-1.3.3.dmg](https://github.com/SmallH0433/pdf-converter/releases/download/v1.3.3/PDF-Converter-macOS-arm64-1.3.3.dmg)
-- Android 8.0+：[下载 PDF-Converter-Android-1.0.1.apk](https://github.com/SmallH0433/pdf-converter/releases/download/v1.2.2/PDF-Converter-Android-1.0.1.apk)
+- Windows 10 / 11：[下载 PDF-Converter-Setup-1.3.6.exe](https://github.com/SmallH0433/pdf-converter/releases/download/v1.3.6/PDF-Converter-Setup-1.3.6.exe)
+- macOS 13+（Apple Silicon）：[下载 PDF-Converter-macOS-arm64-1.3.4.dmg](https://github.com/SmallH0433/pdf-converter/releases/download/v1.3.4/PDF-Converter-macOS-arm64-1.3.4.dmg)
+- Android 8.0+：[下载 PDF-Converter-Android-1.2.0.apk](https://github.com/SmallH0433/pdf-converter/releases/download/v1.2.0-android/PDF-Converter-Android-1.2.0.apk)
 
 iOS/iPadOS 16+ 原生版目前提供源码工程，尚未发布 App Store 或 IPA 安装包；构建方式见下方“iOS / iPadOS”说明。
 
@@ -37,6 +37,17 @@ macOS 包目前使用临时签名、尚未经过 Apple 公证；如果系统首�
 - 支持 Windows 10 / 11（64 位）；Windows 10 建议 21H2 及以上
 - 自带卸载程序，注册到 Windows「应用和功能」
 - 安装新版本时自动识别并沿用旧版安装目录，覆盖旧程序文件，保留已下载的 GPU 加速包
+
+### 1.3.6 Windows 更新内容
+
+- PDF 预览支持鼠标滚轮上下翻页：到页尾继续向下滚动进入下一页，到页首继续向上滚动回到上一页底部；整页可见时直接翻页
+- 支持高精度滚轮和触控板，避免惯性滚动连续跳过多页；翻页保留缩放和未保存标注，书写或拖动笔画时不会因滚轮误翻页
+
+### 1.3.5 Windows 更新内容
+
+- 首页启动时不再间接加载 PDF 引擎、后台任务和本地大模型服务，进入功能页时才加载
+- Windows 安装包排除未使用的图片模糊组件，避免界面初始化时提前加载 NumPy；OCR 功能仍保留完整依赖
+- 修复 Windows 打包配置，显式收集延迟加载的功能页面，保证首次进入各页面可用
 
 ### 1.3.3 macOS 更新内容
 
@@ -214,9 +225,15 @@ iOS 版是基于 UIKit 与 PDFKit 的原生工程，不需要 Python 环境。�
 # 生成 dist/PDF转换工具/（文件夹版，OCR 组件内置）
 .venv/Scripts/python.exe -m PyInstaller PDF转换工具.spec
 
-# 生成版本化安装程序 installer/PDF-Converter-Setup-1.2.16.exe（需 NSIS 3.12，置于 _nsis/）
+# 生成版本化安装程序 installer/PDF-Converter-Setup-1.3.6.exe（需 NSIS 3.12，置于 _nsis/）
 _nsis/nsis-bundle/makensis setup.nsi
 ```
+
+Windows 打包保留文件夹模式（onedir），避免单文件模式每次启动解压依赖。
+`app.core` 不在包初始化时导入服务；页面通过 `PAGE_SPECS` 按需创建，新增页面后需确认
+Windows 和 macOS 的 spec 都保留 `collect_submodules("app.pages")`。
+Windows 排除的 `qfluentwidgets.common.image_utils` 仅用于本程序未启用的图片亚克力模糊，
+库会走自身的可选组件回退分支；原生 Mica 和 OCR 所需的 NumPy 不受影响。
 
 命令行 OCR 工具（与 GUI 共用核心逻辑）：
 

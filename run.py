@@ -2,13 +2,6 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication
-from qfluentwidgets import FluentTranslator, setTheme, Theme
-
-from app.main_window import MainWindow
-from app.macos_ui import configure_application
-
 
 def resource_path(*parts: str) -> Path:
     """返回开发环境或 PyInstaller 打包后的资源路径。"""
@@ -25,6 +18,13 @@ def main():
         engine(np.full((256, 256, 3), 255, dtype=np.uint8))
         print(f"OCR self-test passed: {ocr_service.backend_name()}")
         return
+
+    from PySide6.QtGui import QIcon
+    from PySide6.QtWidgets import QApplication
+    from qfluentwidgets import FluentTranslator, setTheme, Theme
+
+    from app.main_window import MainWindow
+    from app.macos_ui import configure_application
 
     app = QApplication(sys.argv)
     app.setApplicationName("PDF 转换工具")

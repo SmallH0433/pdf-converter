@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 
 import fitz  # PyMuPDF
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QElapsedTimer, QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QImage,
@@ -23,6 +23,7 @@ from PySide6.QtGui import (
     QShortcut,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -600,6 +601,9 @@ class ReaderPage(QWidget):
         self._hits: list[dict] = []
         self._current_hit = -1
         self._fit_width = True
+        self._wheel_page_delta = 0
+        self._wheel_delta_kind = None
+        self._wheel_timer = QElapsedTimer()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 16, 24, 16)
@@ -773,7 +777,9 @@ class ReaderPage(QWidget):
         self.scroll.setWidget(self.canvas)
         self.scroll.setWidgetResizable(False)
         self.scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.scroll.setToolTip("滚轮上下滚动；到页首或页尾后继续滚动可翻页")
         self.scroll.viewport().installEventFilter(self)
+        self.canvas.installEventFilter(self)
         pen_input.enable_kinetic_scroll(self.scroll)  # 触屏平台手势/惯性滚动
         splitter.addWidget(self.scroll)
 
@@ -921,11 +927,12 @@ class ReaderPage(QWidget):
 
     # ---- 翻页 / 缩放 ----
 
-    def _goto_page(self, index: int):
+    def _goto_page(self, index: int, *, at_bottom: bool = False):
         if not self._doc:
             return
         total = self._doc.page_count
         index = max(0, min(index, total - 1))
+        self._wheel_page_delta = 0
         self._page_index = index
         self.page_edit.setText(str(index + 1))
         self.thumb_list.blockSignals(True)
@@ -935,7 +942,8 @@ class ReaderPage(QWidget):
             self.canvas.zoom = self._fit_zoom()
         self.canvas.set_document(self._doc, index)
         self._refresh_highlights()
-        self.scroll.verticalScrollBar().setValue(0)
+        bar = self.scroll.verticalScrollBar()
+        bar.setValue(bar.maximum() if at_bottom else bar.minimum())
         self._update_ui_state()
 
     def _on_page_input(self):
@@ -981,11 +989,76 @@ class ReaderPage(QWidget):
         self.zoom_label.setText(f"{round(self.canvas.zoom * 100)}%")
 
     def eventFilter(self, obj, event):
+        if (obj in (self.canvas, self.scroll.viewport())
+                and event.type() == QEvent.Type.Wheel):
+            if self._handle_page_wheel(event):
+                return True
+            if obj is self.canvas:
+                # 画布覆盖了大部分预览区域；显式把页内滚动交给滚动区，
+                # 不依赖 QWidget 对未处理滚轮事件的平台特定传播方式。
+                QApplication.sendEvent(self.scroll.viewport(), event)
+                return True
         if (obj is self.scroll.viewport()
                 and event.type() == QEvent.Type.Resize
                 and self._fit_width and self._doc):
             self._fit_to_width()
         return super().eventFilter(obj, event)
+
+    def _handle_page_wheel(self, event) -> bool:
+        """页内继续使用原有滚动；到边界后用滚轮翻页。"""
+        if not self._doc:
+            return False
+        if (self.canvas._stroking or self.canvas._erasing
+                or self.canvas._moving or self.canvas._sel_drag):
+            event.accept()
+            return True
+        if (event.modifiers() != Qt.KeyboardModifier.NoModifier
+                or event.buttons() != Qt.MouseButton.NoButton):
+            self._wheel_page_delta = 0
+            return False
+
+        pixels = event.pixelDelta()
+        delta = pixels if not pixels.isNull() else event.angleDelta()
+        if not delta.y() or abs(delta.x()) >= abs(delta.y()):
+            self._wheel_page_delta = 0
+            return False
+        bar = self.scroll.verticalScrollBar()
+        direction = -1 if delta.y() > 0 else 1
+        at_edge = (bar.value() <= bar.minimum() if direction < 0
+                   else bar.value() >= bar.maximum())
+        if not at_edge:
+            self._wheel_page_delta = 0
+            if not pixels.isNull():
+                # 原生触控板已提供连续像素位移，不再交给只看 angleDelta
+                # 的 Fluent 平滑滚动代理，否则纯 pixelDelta 事件会被丢掉。
+                bar.setValue(bar.value() - delta.y())
+                event.accept()
+                return True
+            return False
+
+        # 触控板的惯性尾流仍可在页内滚动，但不能把后续数页一起翻过。
+        event.accept()
+        if event.phase() == Qt.ScrollPhase.ScrollMomentum:
+            self._wheel_page_delta = 0
+            return True
+        kind = "pixel" if not pixels.isNull() else "angle"
+        if (kind != self._wheel_delta_kind
+                or self._wheel_page_delta * delta.y() < 0
+                or not self._wheel_timer.isValid()
+                or self._wheel_timer.elapsed() > 400
+                or event.phase() == Qt.ScrollPhase.ScrollBegin):
+            self._wheel_page_delta = 0
+        self._wheel_delta_kind = kind
+        self._wheel_timer.start()
+        self._wheel_page_delta += delta.y()
+        # 普通鼠标一格为 120；高精度滚轮/触控板需累积，避免轻微移动就跳页。
+        if abs(self._wheel_page_delta) < (60 if kind == "pixel" else 120):
+            return True
+        self._wheel_page_delta = 0
+        target = self._page_index + direction
+        if 0 <= target < self._doc.page_count:
+            self._goto_page(target, at_bottom=direction < 0)
+        return True
 
     # ---- 工具 / 标注 ----
 

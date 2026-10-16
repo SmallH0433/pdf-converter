@@ -31,6 +31,8 @@ datas += [('_llama/runtime', 'llama')]
 binaries = []
 hiddenimports = []
 hiddenimports += collect_submodules('pymupdf')
+# 页面使用字符串路径延迟导入，Analysis 无法自动发现；必须显式收集。
+hiddenimports += collect_submodules('app.pages')
 tmp_ret = collect_all('qfluentwidgets')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 # OCR 组件（含模型文件、onnxruntime 的 CUDA provider DLL）
@@ -49,7 +51,12 @@ datas += collect_data_files('pip')
 tmp_ret = collect_all('certifi')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
-excludes = []
+excludes = [
+    # 本程序未启用 QFluentWidgets 的图片亚克力模糊。其可选实现会在
+    # 导入导航栏时提前加载 numpy/Pillow/scipy；排除后使用库自带的
+    # ImportError 回退路径。Win11 原生 Mica 与 OCR 的 numpy 不受影响。
+    'qfluentwidgets.common.image_utils',
+]
 
 a = Analysis(
     ['run.py'],
@@ -62,7 +69,7 @@ a = Analysis(
     runtime_hooks=[],
     excludes=excludes,
     noarchive=False,
-    optimize=0,
+    optimize=1,
 )
 # Qt6Core.dll 在 Windows 上调用系统 ICU 的无版本后缀接口。构建机 PATH 中的
 # Poppler 可能带有同名 icuuc.dll（导出 ucnv_open_78 而不是 ucnv_open），
